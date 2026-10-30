@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
-import { LayoutDashboard, Puzzle, ScrollText, Settings } from "lucide-react";
+import { LayoutDashboard, Package, Puzzle, ScrollText, Settings } from "lucide-react";
 import clsx from "clsx";
 import { usePanelStore, type Tab } from "../store";
 import { Dot } from "./Badge";
 
 const NAV: Array<{ id: Tab; label: string; icon: ReactNode }> = [
   { id: "dashboard", label: "Дашборд", icon: <LayoutDashboard size={18} /> },
+  { id: "lots", label: "Лоты", icon: <Package size={18} /> },
   { id: "plugins", label: "Плагины", icon: <Puzzle size={18} /> },
   { id: "logs", label: "Журнал", icon: <ScrollText size={18} /> },
   { id: "settings", label: "Настройки", icon: <Settings size={18} /> },

@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from lucrium_protocol import (
     AccountCredentials,
     AccountInput,
+    CallClientParams,
     ExportStateParams,
     GetLogsParams,
     ImportMode,
@@ -62,6 +63,11 @@ class AccountPatch(BaseModel):
 
 class ConfigBody(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class CallBody(BaseModel):
+    client_method: str = Field(min_length=1, max_length=200)
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExportBody(BaseModel):
@@ -173,6 +179,15 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
     async def stop_session(account_id: str) -> dict[str, Any]:
         return await worker.request("stop_session", {"account_id": account_id})
 
+    @app.post("/api/accounts/{account_id}/call")
+    async def call_client(account_id: str, body: CallBody) -> dict[str, Any]:
+        params = CallClientParams(
+            session_id=account_id,
+            client_method=body.client_method,
+            params=body.params,
+        )
+        return await worker.request("call_client", _params(params))
+
     # --- плагины --------------------------------------------------------------
 
     @app.post("/api/plugins/install")
@@ -281,6 +296,7 @@ def _mount_frontend(app: FastAPI) -> None:
 __all__ = [
     "MAX_UPLOAD_BYTES",
     "AccountPatch",
+    "CallBody",
     "CommandBody",
     "ConfigBody",
     "ExportBody",

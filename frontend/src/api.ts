@@ -50,6 +50,11 @@ export const api = {
   removeAccount: (id: string) => request<{ account_id: string }>(`/api/accounts/${id}`, { method: "DELETE" }),
   startSession: (id: string) => request<unknown>(`/api/accounts/${id}/start`, { method: "POST" }),
   stopSession: (id: string) => request<unknown>(`/api/accounts/${id}/stop`, { method: "POST" }),
+  callClient: <T = unknown>(id: string, client_method: string, params: Record<string, unknown> = {}) =>
+    request<{ data: T }>(`/api/accounts/${id}/call`, {
+      method: "POST",
+      body: JSON.stringify({ client_method, params }),
+    }).then((body) => body.data),
   installPlugin: (file: File, autoStart: boolean, overwrite: boolean) => {
     const form = new FormData();
     form.set("file", file);

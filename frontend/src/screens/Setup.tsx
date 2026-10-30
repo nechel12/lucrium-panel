@@ -1,7 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Server, ShieldCheck } from "lucide-react";
+import { Copy, KeyRound, Server, ShieldCheck } from "lucide-react";
 import { api } from "../api";
+
+const INSTALL_COMMAND =
+  "curl -fsSL https://raw.githubusercontent.com/nechel12/lucrium-worker/main/install.sh | bash";
 
 export default function Setup() {
   const queryClient = useQueryClient();
@@ -10,6 +13,7 @@ export default function Setup() {
   const [verifyTls, setVerifyTls] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -37,6 +41,28 @@ export default function Setup() {
           <p className="mt-2 text-sm text-slate-400">
             Введите адрес VPS и pairing-токен, который напечатал <code className="text-slate-300">install.sh</code>.
           </p>
+        </div>
+
+        <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+          <div className="mb-1.5 text-[11px] font-medium text-slate-400">Если воркер ещё не установлен:</div>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-lg bg-slate-950/80 px-2.5 py-2 font-mono text-[10px] text-slate-300">
+              {INSTALL_COMMAND}
+            </code>
+            <button
+              type="button"
+              title="Скопировать команду"
+              onClick={() => {
+                void navigator.clipboard.writeText(INSTALL_COMMAND);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              }}
+              className="rounded-lg border border-slate-700 p-2 text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+            >
+              <Copy size={14} />
+            </button>
+          </div>
+          {copied && <div className="mt-1 text-[10px] text-emerald-400">Скопировано</div>}
         </div>
 
         <form onSubmit={submit} className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">

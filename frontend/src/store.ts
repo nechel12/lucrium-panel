@@ -7,7 +7,7 @@ import type {
   WorkerStatus,
 } from "./types";
 
-export type Tab = "dashboard" | "plugins" | "logs" | "settings";
+export type Tab = "dashboard" | "lots" | "plugins" | "logs" | "settings";
 
 export interface EventItem extends LiveEvent {
   id: number;

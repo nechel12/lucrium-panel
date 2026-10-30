@@ -5,6 +5,7 @@ import { usePanelStore } from "./store";
 import { Layout } from "./components/Layout";
 import Setup from "./screens/Setup";
 import Dashboard from "./screens/Dashboard";
+import Lots from "./screens/Lots";
 import Plugins from "./screens/Plugins";
 import Logs from "./screens/Logs";
 import Settings from "./screens/Settings";
@@ -73,6 +74,7 @@ export default function App() {
   return (
     <Layout>
       {tab === "dashboard" && <Dashboard />}
+      {tab === "lots" && <Lots />}
       {tab === "plugins" && <Plugins />}
       {tab === "logs" && <Logs />}
       {tab === "settings" && <Settings />}
