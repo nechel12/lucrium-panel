@@ -5,17 +5,20 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  windows-exe:
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
-      - name: Checkout protocol (sibling dependency)
+      - name: Checkout protocol at the release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: nechel12/lucrium-protocol
           path: lucrium-protocol
+          ref: ${{ github.ref_name }}
           persist-credentials: false
 
       - name: Checkout panel
@@ -45,8 +48,89 @@ jobs:
           uv sync --frozen --extra desktop --extra build
           uv run pyinstaller packaging/lucrium-panel.spec --noconfirm
 
+      - name: Create SHA256SUMS
+        working-directory: lucrium-panel
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "dist\Lucrium.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Lucrium.exe" | Out-File -Encoding ascii "dist\SHA256SUMS"
+
+      - name: Upload unsigned artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-unsigned
+          path: |
+            lucrium-panel/dist/Lucrium.exe
+            lucrium-panel/dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download unsigned artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-unsigned
+          path: dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign artifact and checksums (Sigstore keyless)
+        run: |
+          cosign sign-blob --yes --bundle dist/Lucrium.exe.sigstore.json dist/Lucrium.exe
+          cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore.json dist/SHA256SUMS
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-signed
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-signed
+          path: dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Verify Sigstore bundles before publishing
+        run: |
+          cosign verify-blob \
+            --bundle dist/Lucrium.exe.sigstore.json \
+            --certificate-identity-regexp 'https://github.com/nechel12/lucrium-panel/.github/workflows/release.yml@refs/tags/.*' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            dist/Lucrium.exe
+          cosign verify-blob \
+            --bundle dist/SHA256SUMS.sigstore.json \
+            --certificate-identity-regexp 'https://github.com/nechel12/lucrium-panel/.github/workflows/release.yml@refs/tags/.*' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            dist/SHA256SUMS
+          cd dist
+          sha256sum -c SHA256SUMS
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: lucrium-panel/dist/Lucrium.exe
+          files: |
+            dist/Lucrium.exe
+            dist/SHA256SUMS
+            dist/Lucrium.exe.sigstore.json
+            dist/SHA256SUMS.sigstore.json
           generate_release_notes: true
