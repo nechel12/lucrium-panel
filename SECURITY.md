@@ -35,8 +35,9 @@ verifies both signatures.
 ## Windows executable
 
 Release assets include `SHA256SUMS` and a Sigstore bundle. The build workflow
-signs the executable and checksums keylessly with cosign/OIDC. Verify before
-running:
+signs the executable and checksums keylessly with cosign/OIDC. Tags/releases
+created before the signing key was introduced (`v0.1.0`) are not trusted;
+verify only the next signed release. Verify before running:
 
 ```powershell
 Get-FileHash .\Lucrium.exe -Algorithm SHA256
