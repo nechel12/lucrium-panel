@@ -9,14 +9,38 @@ export class ApiError extends Error {
   }
 }
 
+const ACCESS_KEY = "lucrium_access_token";
+
+function readAccessToken(): string | null {
+  try {
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const fromHash = hash.get("access");
+    if (fromHash) {
+      sessionStorage.setItem(ACCESS_KEY, fromHash);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      return fromHash;
+    }
+    return sessionStorage.getItem(ACCESS_KEY);
+  } catch {
+    return null;
+  }
+}
+
+const accessToken = readAccessToken();
 let csrfToken: string | null = null;
 let sessionPromise: Promise<string> | null = null;
+
+function withAccess(headers: Headers): Headers {
+  if (accessToken) headers.set("X-Lucrium-Access", accessToken);
+  return headers;
+}
 
 /** Получает CSRF-токен и HttpOnly cookie для локального API/WebSocket. */
 export async function ensureSession(): Promise<string> {
   if (csrfToken) return csrfToken;
   if (!sessionPromise) {
-    sessionPromise = fetch("/api/session", { credentials: "same-origin" })
+    const headers = withAccess(new Headers());
+    sessionPromise = fetch("/api/session", { credentials: "same-origin", headers })
       .then(async (response) => {
         if (!response.ok) throw new ApiError(`http_${response.status}`, "не удалось открыть сессию панели");
         const body = (await response.json()) as { token?: string };
@@ -34,7 +58,7 @@ export async function ensureSession(): Promise<string> {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
-  const headers = new Headers(init?.headers);
+  const headers = withAccess(new Headers(init?.headers));
   if (init?.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }

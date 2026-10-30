@@ -205,6 +205,22 @@ async def test_api_state_and_command(api: Any) -> None:
     assert worker.calls[-1] == ("ping", {"nonce": "x"})
 
 
+async def test_api_requires_launch_access_token() -> None:
+    worker = FakeWorker()
+    app = create_app(client=worker, access_token="launch-secret")  # type: ignore[arg-type]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        assert (await client.get("/api/state")).status_code == 401
+        session = await client.get("/api/session", headers={"X-Lucrium-Access": "launch-secret"})
+        assert session.status_code == 200
+        client.headers["X-Lucrium-Access"] = "launch-secret"
+        client.headers["X-Lucrium-CSRF"] = session.json()["token"]
+        assert (await client.get("/api/state")).status_code == 200
+
+        # health остаётся доступен для smoke-проверки exe
+        assert (await client.get("/api/health")).status_code == 200
+
+
 async def test_api_requires_csrf_header(api: Any) -> None:
     client, _ = api
     token = client.headers.pop("X-Lucrium-CSRF")

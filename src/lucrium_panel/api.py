@@ -57,6 +57,8 @@ _update_cache: dict[str, Any] = {"at": 0.0, "payload": None}
 
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 SESSION_COOKIE = "lucrium_session"
+ACCESS_COOKIE = "lucrium_access"
+ACCESS_HEADER = "x-lucrium-access"
 CSRF_HEADER = "x-lucrium-csrf"
 SAFE_COMMANDS = frozenset({Command.PING})
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -155,7 +157,7 @@ def _origin_allowed(
     return expected_port is None or parsed.port in (None, expected_port)
 
 
-def _cookie_token(header: str | None) -> str | None:
+def _cookie_value(header: str | None, name: str) -> str | None:
     if not header:
         return None
     jar = SimpleCookie()
@@ -163,7 +165,7 @@ def _cookie_token(header: str | None) -> str | None:
         jar.load(header)
     except Exception:
         return None
-    morsel = jar.get(SESSION_COOKIE)
+    morsel = jar.get(name)
     return None if morsel is None else morsel.value
 
 
@@ -180,12 +182,14 @@ class LocalSecurityMiddleware:
         app: ASGIApp,
         *,
         token: str,
+        access_token: str | None,
         allowed_hosts: frozenset[str],
         port: int | None,
         allowed_origins: frozenset[str],
     ) -> None:
         self.app = app
         self.token = token
+        self.access_token = access_token
         self.allowed_hosts = allowed_hosts
         self.port = port
         self.allowed_origins = allowed_origins
@@ -207,14 +211,26 @@ class LocalSecurityMiddleware:
             await self._reject(scope, receive, send, 403, "forbidden", "cross-site request blocked")
             return
 
+        path = str(scope.get("path", ""))
+        if self.access_token is not None:
+            if scope["type"] == "websocket":
+                supplied = headers.get(ACCESS_HEADER) or _cookie_value(headers.get("cookie"), ACCESS_COOKIE)
+                if supplied is None or not secrets.compare_digest(supplied, self.access_token):
+                    await self._deny_websocket(send)
+                    return
+            elif path.startswith("/api/") and path != "/api/health":
+                supplied = headers.get(ACCESS_HEADER)
+                if supplied is None or not secrets.compare_digest(supplied, self.access_token):
+                    await self._reject(scope, receive, send, 401, "unauthorized", "missing access token")
+                    return
+
         if scope["type"] == "websocket":
-            token = _cookie_token(headers.get("cookie"))
+            token = _cookie_value(headers.get("cookie"), SESSION_COOKIE)
             if token is None or not secrets.compare_digest(token, self.token):
                 await self._deny_websocket(send)
                 return
         else:
             method = str(scope.get("method", "GET")).upper()
-            path = str(scope.get("path", ""))
             if method not in _SAFE_METHODS and path.startswith("/api/"):
                 supplied = headers.get(CSRF_HEADER)
                 if supplied is None or not secrets.compare_digest(supplied, self.token):
@@ -263,6 +279,7 @@ def create_app(
     allowed_hosts: tuple[str, ...] = tuple(LOCAL_HOSTS),
     port: int | None = None,
     allowed_origins: tuple[str, ...] = (),
+    access_token: str | None = None,
 ) -> FastAPI:
     worker = client or WorkerClient(settings_path)
     csrf_token = secrets.token_urlsafe(32)
@@ -281,6 +298,7 @@ def create_app(
     app.add_middleware(
         LocalSecurityMiddleware,
         token=csrf_token,
+        access_token=access_token,
         allowed_hosts=frozenset(item.lower() for item in allowed_hosts),
         port=port,
         allowed_origins=frozenset(allowed_origins),
@@ -314,6 +332,14 @@ def create_app(
             samesite="strict",
             path="/",
         )
+        if access_token is not None:
+            response.set_cookie(
+                ACCESS_COOKIE,
+                access_token,
+                httponly=True,
+                samesite="strict",
+                path="/",
+            )
         response.headers["Cache-Control"] = "no-store"
         return {"token": csrf_token}
 

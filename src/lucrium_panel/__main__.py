@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import secrets
 import sys
 import threading
 import time
@@ -61,12 +62,14 @@ def main(argv: list[str] | None = None) -> int:
     settings_path = Path(args.settings) if args.settings else default_settings_path()
     dev_origin = os.environ.get("LUCRIUM_DEV_ORIGIN", "").strip()
     allowed_origins = (dev_origin,) if dev_origin else ()
+    access_token = os.environ.get("LUCRIUM_PANEL_ACCESS_TOKEN", "").strip() or secrets.token_urlsafe(32)
     app = create_app(
         settings_path=settings_path,
         port=args.port,
         allowed_origins=allowed_origins,
+        access_token=access_token,
     )
-    url = f"http://{args.host}:{args.port}"
+    url = f"http://{args.host}:{args.port}/#access={access_token}"
     config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config)
 
