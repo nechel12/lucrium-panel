@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout protocol (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: nechel12/lucrium-protocol
+          path: lucrium-protocol
+          ssh-key: ${{ secrets.PROTOCOL_DEPLOY_KEY }}
+
+      - name: Checkout panel
+        uses: actions/checkout@v4
+        with:
+          path: lucrium-panel
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: lucrium-panel/frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: lucrium-panel/frontend
+        run: npm ci && npm run build
+
+      - name: Build exe
+        working-directory: lucrium-panel
+        run: |
+          uv sync --frozen --extra desktop --extra build
+          uv run pyinstaller packaging/lucrium-panel.spec --noconfirm
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: lucrium-panel/dist/Lucrium.exe
+          generate_release_notes: true

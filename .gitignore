@@ -1,37 +1,27 @@
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
 .venv/
-venv/
-.pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
 
-# PyInstaller / Nuitka
-*.manifest
-*.build
-*.dist
-*.onefile-build
-
-# Node / Vite / React
-node_modules/
+# Frontend
+frontend/node_modules/
 frontend/dist/
-frontend/.vite/
-*.tsbuildinfo
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
-# Env / secrets
-.env
-.env.*
+# Собранный фронтенд (генерируется `npm run build`)
+src/lucrium_panel/static/*
+!src/lucrium_panel/static/.gitkeep
 
-# Editors / OS
-.idea/
-.vscode/
-*.swp
+# OS/IDE
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/

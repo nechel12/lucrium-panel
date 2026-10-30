@@ -1,0 +1,8 @@
+# Единые окончания строк: в репозитории — LF (CI + Linux-разработка).
+* text=auto eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.png binary
+*.ico binary
+*.exe binary
+*.zip binary

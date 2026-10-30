@@ -1,0 +1,291 @@
+"""Локальный HTTP/WS API панели (FastAPI на 127.0.0.1).
+
+Фронтенд не общается с воркером напрямую: только через этот backend, который
+держит одно WSS-соединение и раздаёт события. Так pairing-токен не попадает
+в браузер/webview.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Annotated, Any
+
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from lucrium_protocol import (
+    AccountCredentials,
+    AccountInput,
+    ExportStateParams,
+    GetLogsParams,
+    ImportMode,
+    ImportStateParams,
+    InstallPluginParams,
+    LogLevel,
+    LogScope,
+    ProxyConfig,
+    RemovePluginParams,
+    RestartParams,
+    RestartScope,
+    SetPluginConfigParams,
+    UpdateAccountParams,
+    to_wire,
+)
+from pydantic import BaseModel, Field, SecretStr
+
+from .worker_client import WorkerClient, WorkerError
+
+MAX_UPLOAD_BYTES = 48 * 1024 * 1024
+
+
+class SettingsBody(BaseModel):
+    worker_url: str = Field(default="", max_length=500)
+    token: str = Field(default="", max_length=500)
+    verify_tls: bool = False
+
+
+class CommandBody(BaseModel):
+    method: str = Field(min_length=1, max_length=64)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AccountPatch(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    credentials: dict[str, Any] | None = None
+    proxy: dict[str, Any] | None = None
+    clear_proxy: bool = False
+
+
+class ConfigBody(BaseModel):
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExportBody(BaseModel):
+    passphrase: str = Field(min_length=8, max_length=1024)
+
+
+class ImportBody(BaseModel):
+    blob_b64: str = Field(min_length=1)
+    passphrase: str = Field(min_length=8, max_length=1024)
+    mode: ImportMode = ImportMode.MERGE
+
+
+class RestartBody(BaseModel):
+    scope: RestartScope = RestartScope.WORKER
+    delay_seconds: float = Field(default=0.0, ge=0, le=3600)
+
+
+def create_app(client: WorkerClient | None = None, settings_path: Path | None = None) -> FastAPI:
+    worker = client or WorkerClient(settings_path)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await worker.start()
+        try:
+            yield
+        finally:
+            await worker.stop()
+
+    app = FastAPI(title="Lucrium Panel", version="0.1.0", lifespan=lifespan)
+    app.state.worker = worker
+
+    @app.exception_handler(WorkerError)
+    async def _worker_error(_: Any, exc: WorkerError) -> JSONResponse:
+        status = 503 if exc.code in {"unavailable", "timeout"} else 400
+        return JSONResponse(status_code=status, content={"error": {"code": exc.code, "message": exc.message}})
+
+    # --- подключение ----------------------------------------------------------
+
+    @app.get("/api/health")
+    async def health() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/api/settings")
+    async def get_settings() -> dict[str, Any]:
+        return worker.settings.masked()
+
+    @app.put("/api/settings")
+    async def put_settings(body: SettingsBody) -> dict[str, Any]:
+        token = body.token.strip() or worker.settings.token
+        if not body.worker_url.strip():
+            await worker.clear()
+        else:
+            await worker.reconfigure(worker_url=body.worker_url, token=token, verify_tls=body.verify_tls)
+        return worker.settings.masked()
+
+    @app.delete("/api/settings")
+    async def delete_settings() -> dict[str, bool]:
+        await worker.clear()
+        return {"ok": True}
+
+    # --- состояние и команды --------------------------------------------------
+
+    @app.get("/api/state")
+    async def get_state() -> dict[str, Any]:
+        return worker.info()
+
+    @app.post("/api/command")
+    async def run_command(body: CommandBody) -> dict[str, Any]:
+        result = await worker.request(body.method, body.params)
+        return {"result": result}
+
+    @app.get("/api/logs")
+    async def get_logs(
+        scope: LogScope = LogScope.WORKER,
+        plugin_id: str | None = None,
+        level: LogLevel | None = None,
+        limit: int = Query(default=100, ge=1, le=1000),
+        cursor: int | None = Query(default=None, ge=0),
+    ) -> dict[str, Any]:
+        params = GetLogsParams(scope=scope, plugin_id=plugin_id, level=level, limit=limit, cursor=cursor)
+        return await worker.request("get_logs", _params(params))
+
+    # --- аккаунты -------------------------------------------------------------
+
+    @app.post("/api/accounts")
+    async def add_account(body: AccountInput) -> dict[str, Any]:
+        return await worker.request("add_account", {"account": to_wire(body)})
+
+    @app.patch("/api/accounts/{account_id}")
+    async def update_account(account_id: str, body: AccountPatch) -> dict[str, Any]:
+        params = UpdateAccountParams(
+            account_id=account_id,
+            label=body.label,
+            credentials=(None if body.credentials is None else AccountCredentials.model_validate(body.credentials)),
+            proxy=None if body.proxy is None else ProxyConfig.model_validate(body.proxy),
+            clear_proxy=body.clear_proxy,
+        )
+        return await worker.request("update_account", _params(params))
+
+    @app.delete("/api/accounts/{account_id}")
+    async def remove_account(account_id: str) -> dict[str, Any]:
+        return await worker.request("remove_account", {"account_id": account_id})
+
+    @app.post("/api/accounts/{account_id}/start")
+    async def start_session(account_id: str) -> dict[str, Any]:
+        return await worker.request("start_session", {"account_id": account_id})
+
+    @app.post("/api/accounts/{account_id}/stop")
+    async def stop_session(account_id: str) -> dict[str, Any]:
+        return await worker.request("stop_session", {"account_id": account_id})
+
+    # --- плагины --------------------------------------------------------------
+
+    @app.post("/api/plugins/install")
+    async def install_plugin(
+        file: Annotated[UploadFile, File()],
+        auto_start: Annotated[bool, Form()] = True,
+        overwrite: Annotated[bool, Form()] = False,
+    ) -> dict[str, Any]:
+        archive = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(archive) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="архив больше 48 МБ")
+        params = InstallPluginParams(
+            archive_b64=base64.b64encode(archive).decode(),
+            sha256=hashlib.sha256(archive).hexdigest(),
+            auto_start=auto_start,
+            overwrite=overwrite,
+        )
+        return await worker.request("install_plugin", _params(params))
+
+    @app.post("/api/plugins/{plugin_id}/config")
+    async def set_plugin_config(plugin_id: str, body: ConfigBody) -> dict[str, Any]:
+        params = SetPluginConfigParams(plugin_id=plugin_id, config=body.config)
+        return await worker.request("set_plugin_config", _params(params))
+
+    @app.get("/api/plugins/{plugin_id}/schema")
+    async def get_plugin_schema(plugin_id: str) -> dict[str, Any]:
+        return await worker.request("get_plugin_schema", {"plugin_id": plugin_id})
+
+    @app.delete("/api/plugins/{plugin_id}")
+    async def remove_plugin(plugin_id: str, purge_data: bool = False) -> dict[str, Any]:
+        params = RemovePluginParams(plugin_id=plugin_id, purge_data=purge_data)
+        return await worker.request("remove_plugin", _params(params))
+
+    # --- состояние целиком ----------------------------------------------------
+
+    @app.post("/api/export")
+    async def export_state(body: ExportBody) -> dict[str, Any]:
+        params = ExportStateParams(passphrase=SecretStr(body.passphrase))
+        return await worker.request("export_state", _params(params))
+
+    @app.post("/api/import")
+    async def import_state(body: ImportBody) -> dict[str, Any]:
+        params = ImportStateParams(
+            blob_b64=body.blob_b64,
+            passphrase=SecretStr(body.passphrase),
+            mode=body.mode,
+        )
+        return await worker.request("import_state", _params(params))
+
+    @app.post("/api/token/rotate")
+    async def rotate_token() -> dict[str, Any]:
+        result = await worker.request("rotate_token", {})
+        token = str(result.get("token", ""))
+        if token:
+            await worker.reconfigure(
+                worker_url=worker.settings.worker_url,
+                token=token,
+                verify_tls=worker.settings.verify_tls,
+            )
+        return result
+
+    @app.post("/api/restart")
+    async def restart(body: RestartBody) -> dict[str, Any]:
+        params = RestartParams(scope=body.scope, delay_seconds=body.delay_seconds)
+        return await worker.request("restart", _params(params))
+
+    # --- live-события ---------------------------------------------------------
+
+    @app.websocket("/api/events")
+    async def events(websocket: WebSocket) -> None:
+        await websocket.accept()
+        queue = worker.subscribe()
+        try:
+            await websocket.send_json({"kind": "snapshot", "data": worker.info()})
+            while True:
+                await websocket.send_json(await queue.get())
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            worker.unsubscribe(queue)
+
+    _mount_frontend(app)
+    return app
+
+
+def _params(model: BaseModel) -> dict[str, Any]:
+    """``to_wire`` (раскрывает SecretStr) + method добавляет сам envelope."""
+    payload = to_wire(model)
+    payload.pop("method", None)
+    return payload
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.is_dir() and (static_dir / "index.html").is_file():
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+    else:
+
+        @app.get("/")
+        async def missing_frontend() -> dict[str, str]:
+            return {
+                "message": "Frontend не собран. Выполните `npm ci && npm run build` в каталоге frontend/.",
+            }
+
+
+__all__ = [
+    "MAX_UPLOAD_BYTES",
+    "AccountPatch",
+    "CommandBody",
+    "ConfigBody",
+    "ExportBody",
+    "ImportBody",
+    "RestartBody",
+    "SettingsBody",
+    "create_app",
+]

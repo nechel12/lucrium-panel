@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - name: Checkout protocol (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: nechel12/lucrium-protocol
+          path: lucrium-protocol
+          ssh-key: ${{ secrets.PROTOCOL_DEPLOY_KEY }}
+
+      - name: Checkout panel
+        uses: actions/checkout@v4
+        with:
+          path: lucrium-panel
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync environment
+        working-directory: lucrium-panel
+        run: uv sync --frozen
+
+      - name: Ruff (lint + format check)
+        working-directory: lucrium-panel
+        run: uv run ruff check . && uv run ruff format --check .
+
+      - name: Mypy (strict)
+        working-directory: lucrium-panel
+        run: uv run mypy src
+
+      - name: Pytest
+        working-directory: lucrium-panel
+        run: uv run pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check + build
+        working-directory: frontend
+        run: npm run build
+
+  exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout protocol (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: nechel12/lucrium-protocol
+          path: lucrium-protocol
+          ssh-key: ${{ secrets.PROTOCOL_DEPLOY_KEY }}
+
+      - name: Checkout panel
+        uses: actions/checkout@v4
+        with:
+          path: lucrium-panel
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: lucrium-panel/frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: lucrium-panel/frontend
+        run: npm ci && npm run build
+
+      - name: Sync desktop build environment
+        working-directory: lucrium-panel
+        run: uv sync --frozen --extra desktop --extra build
+
+      - name: Build exe
+        working-directory: lucrium-panel
+        run: uv run pyinstaller packaging/lucrium-panel.spec --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lucrium-windows
+          path: lucrium-panel/dist/Lucrium.exe
+          if-no-files-found: error
