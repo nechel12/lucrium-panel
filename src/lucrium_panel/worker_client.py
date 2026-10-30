@@ -309,7 +309,12 @@ class WorkerClient:
 
 
 def _normalize_fingerprint(value: str) -> str:
-    return "".join(char for char in value.strip().lower() if char in "0123456789abcdef")
+    cleaned = value.strip().lower()
+    for prefix in ("sha256:", "sha-256:", "sha256=", "sha-256="):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :]
+            break
+    return "".join(char for char in cleaned if char in "0123456789abcdef")
 
 
 def _ssl_context(settings: PanelSettings) -> ssl.SSLContext:

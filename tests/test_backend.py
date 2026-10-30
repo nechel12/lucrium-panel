@@ -65,6 +65,15 @@ def test_settings_missing_file(tmp_path: Path) -> None:
     assert not loaded.configured
 
 
+def test_tls_fingerprint_normalization() -> None:
+    from lucrium_panel.worker_client import _normalize_fingerprint
+
+    digest = "ab" * 32
+    assert _normalize_fingerprint(digest.upper()) == digest
+    assert _normalize_fingerprint(f"SHA256:{digest.upper()}") == digest
+    assert _normalize_fingerprint(":".join(digest[index : index + 2] for index in range(0, 64, 2))) == digest
+
+
 def test_settings_malformed_json_types_are_ignored(tmp_path: Path) -> None:
     path = tmp_path / "panel.json"
     for payload in ("[]", "null", "42", '"value"'):
