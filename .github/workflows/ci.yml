@@ -112,6 +112,22 @@ jobs:
         working-directory: lucrium-panel
         run: uv run pyinstaller packaging/lucrium-panel.spec --noconfirm
 
+      - name: Smoke-test exe
+        working-directory: lucrium-panel
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist\Lucrium.exe" -ArgumentList "--no-browser","--port","18700" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+              $response = Invoke-RestMethod -Uri "http://127.0.0.1:18700/api/health" -TimeoutSec 3
+              if ($response.ok) { $ok = $true; break }
+            } catch { }
+          }
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "Lucrium.exe did not start" }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
