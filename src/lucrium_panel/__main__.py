@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import sys
 import threading
 import time
@@ -50,8 +51,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--settings", default=None, help="путь к panel.json")
     args = parser.parse_args(argv)
 
+    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+        print(
+            "error: --host ограничен loopback (127.0.0.1/localhost/::1); локальный API не предназначен для сети",
+            file=sys.stderr,
+        )
+        return 2
+
     settings_path = Path(args.settings) if args.settings else default_settings_path()
-    app = create_app(settings_path=settings_path)
+    dev_origin = os.environ.get("LUCRIUM_DEV_ORIGIN", "").strip()
+    allowed_origins = (dev_origin,) if dev_origin else ()
+    app = create_app(
+        settings_path=settings_path,
+        port=args.port,
+        allowed_origins=allowed_origins,
+    )
     url = f"http://{args.host}:{args.port}"
     config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config)

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "./api";
+import { api, ensureSession } from "./api";
 import { usePanelStore } from "./store";
 import { Layout } from "./components/Layout";
 import Setup from "./screens/Setup";
@@ -16,7 +16,14 @@ function useLiveEvents() {
     let socket: WebSocket | null = null;
     let timer: number | undefined;
     let closed = false;
-    const connect = () => {
+    const connect = async () => {
+      try {
+        await ensureSession();
+      } catch {
+        if (!closed) timer = window.setTimeout(() => void connect(), 2000);
+        return;
+      }
+      if (closed) return;
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       socket = new WebSocket(`${protocol}://${window.location.host}/api/events`);
       socket.onmessage = (event) => {
@@ -27,10 +34,10 @@ function useLiveEvents() {
         }
       };
       socket.onclose = () => {
-        if (!closed) timer = window.setTimeout(connect, 2000);
+        if (!closed) timer = window.setTimeout(() => void connect(), 2000);
       };
     };
-    connect();
+    void connect();
     return () => {
       closed = true;
       if (timer) window.clearTimeout(timer);

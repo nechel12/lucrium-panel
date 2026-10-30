@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,22 @@ def test_settings_missing_file(tmp_path: Path) -> None:
     assert not loaded.configured
 
 
+def test_settings_malformed_json_types_are_ignored(tmp_path: Path) -> None:
+    path = tmp_path / "panel.json"
+    for payload in ("[]", "null", "42", '"value"'):
+        path.write_text(payload, encoding="utf-8")
+        assert PanelSettings.load(path) == PanelSettings()
+
+
+def test_settings_string_boolean_is_parsed_strictly(tmp_path: Path) -> None:
+    path = tmp_path / "panel.json"
+    path.write_text(
+        json.dumps({"worker_url": "host:8443", "token": "t" * 64, "verify_tls": "false"}),
+        encoding="utf-8",
+    )
+    assert PanelSettings.load(path).verify_tls is False
+
+
 async def test_worker_client_connects_and_requests(tmp_path: Path) -> None:
     async def handler(websocket: Any) -> None:
         await websocket.send(build_event(ServerEvent.STATE, _snapshot()).model_dump_json())
@@ -112,7 +129,7 @@ class FakeWorker:
     def __init__(self) -> None:
         self.settings = PanelSettings().with_connection(worker_url="wss://worker:8443", token="t" * 64)
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.reconfigured: list[tuple[str, str, bool]] = []
+        self.reconfigured: list[tuple[str, str, bool, str]] = []
         self.cleared = False
 
     def info(self) -> dict[str, Any]:
@@ -136,9 +153,21 @@ class FakeWorker:
     async def stop(self) -> None:
         return None
 
-    async def reconfigure(self, *, worker_url: str, token: str, verify_tls: bool = False) -> None:
-        self.reconfigured.append((worker_url, token, verify_tls))
-        self.settings = self.settings.with_connection(worker_url=worker_url, token=token, verify_tls=verify_tls)
+    async def reconfigure(
+        self,
+        *,
+        worker_url: str,
+        token: str,
+        verify_tls: bool = True,
+        tls_fingerprint: str = "",
+    ) -> None:
+        self.reconfigured.append((worker_url, token, verify_tls, tls_fingerprint))
+        self.settings = self.settings.with_connection(
+            worker_url=worker_url,
+            token=token,
+            verify_tls=verify_tls,
+            tls_fingerprint=tls_fingerprint,
+        )
 
     async def clear(self) -> None:
         self.cleared = True
@@ -149,7 +178,10 @@ async def api() -> Any:
     worker = FakeWorker()
     app = create_app(client=worker)  # type: ignore[arg-type]
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        session = await client.get("/api/session")
+        assert session.status_code == 200
+        client.headers["X-Lucrium-CSRF"] = session.json()["token"]
         yield client, worker
 
 
@@ -162,6 +194,28 @@ async def test_api_state_and_command(api: Any) -> None:
     response = await client.post("/api/command", json={"method": "ping", "params": {"nonce": "x"}})
     assert response.status_code == 200
     assert worker.calls[-1] == ("ping", {"nonce": "x"})
+
+
+async def test_api_requires_csrf_header(api: Any) -> None:
+    client, _ = api
+    token = client.headers.pop("X-Lucrium-CSRF")
+    try:
+        response = await client.post("/api/token/rotate")
+        assert response.status_code == 403
+    finally:
+        client.headers["X-Lucrium-CSRF"] = token
+
+
+async def test_api_rejects_cross_origin(api: Any) -> None:
+    client, _ = api
+    response = await client.post("/api/token/rotate", headers={"Origin": "https://evil.example"})
+    assert response.status_code == 403
+
+
+async def test_api_command_rejects_dangerous_method(api: Any) -> None:
+    client, _ = api
+    response = await client.post("/api/command", json={"method": "get_state"})
+    assert response.status_code == 403
 
 
 async def test_api_add_account_sends_plaintext_credentials(api: Any) -> None:

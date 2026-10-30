@@ -11,20 +11,24 @@ import asyncio
 import base64
 import hashlib
 import json
+import secrets
 import time
 import urllib.request
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from lucrium_protocol import (
     AccountCredentials,
     AccountInput,
     CallClientParams,
+    Command,
     ExportStateParams,
     GetEventsParams,
     GetLogsParams,
@@ -41,7 +45,9 @@ from lucrium_protocol import (
     UpdateAccountParams,
     to_wire,
 )
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .worker_client import WorkerClient, WorkerError
 
@@ -49,11 +55,18 @@ MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 UPDATE_CHECK_URL = "https://api.github.com/repos/nechel12/lucrium-panel/releases/latest"
 _update_cache: dict[str, Any] = {"at": 0.0, "payload": None}
 
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+SESSION_COOKIE = "lucrium_session"
+CSRF_HEADER = "x-lucrium-csrf"
+SAFE_COMMANDS = frozenset({Command.PING})
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
 
 class SettingsBody(BaseModel):
     worker_url: str = Field(default="", max_length=500)
     token: str = Field(default="", max_length=500)
-    verify_tls: bool = False
+    verify_tls: bool = True
+    tls_fingerprint: str = Field(default="", max_length=200)
 
 
 class CommandBody(BaseModel):
@@ -92,8 +105,152 @@ class RestartBody(BaseModel):
     delay_seconds: float = Field(default=0.0, ge=0, le=3600)
 
 
-def create_app(client: WorkerClient | None = None, settings_path: Path | None = None) -> FastAPI:
+def _host_parts(value: str | None) -> tuple[str, int | None] | None:
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(f"//{value}")
+        return (parsed.hostname or "").lower(), parsed.port
+    except ValueError:
+        return None
+
+
+def _host_allowed(
+    value: str | None,
+    allowed_hosts: frozenset[str],
+    expected_port: int | None,
+) -> bool:
+    parts = _host_parts(value)
+    if parts is None:
+        return False
+    hostname, port = parts
+    if hostname not in allowed_hosts:
+        return False
+    return expected_port is None or port in (None, expected_port)
+
+
+def _origin_allowed(
+    value: str | None,
+    allowed_hosts: frozenset[str],
+    expected_port: int | None,
+    allowed_origins: frozenset[str],
+) -> bool:
+    if value is None:
+        return True
+    if value == "null" or not value:
+        return False
+    if value in allowed_origins:
+        return True
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return False
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in allowed_hosts:
+        return False
+    return expected_port is None or parsed.port in (None, expected_port)
+
+
+def _cookie_token(header: str | None) -> str | None:
+    if not header:
+        return None
+    jar = SimpleCookie()
+    try:
+        jar.load(header)
+    except Exception:
+        return None
+    morsel = jar.get(SESSION_COOKIE)
+    return None if morsel is None else morsel.value
+
+
+class LocalSecurityMiddleware:
+    """Host/Origin/CSRF-защита локального API панели.
+
+    Браузер не может выставить кастомный заголовок у cross-site simple request,
+    а DNS rebinding отсекается проверкой Host. Для WebSocket токен берётся из
+    HttpOnly/SameSite=Strict cookie, которую выставляет ``GET /api/session``.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        token: str,
+        allowed_hosts: frozenset[str],
+        port: int | None,
+        allowed_origins: frozenset[str],
+    ) -> None:
+        self.app = app
+        self.token = token
+        self.allowed_hosts = allowed_hosts
+        self.port = port
+        self.allowed_origins = allowed_origins
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        if not _host_allowed(headers.get("host"), self.allowed_hosts, self.port):
+            await self._deny(scope, receive, send, 400, "invalid_host", "invalid Host header")
+            return
+        if not _origin_allowed(headers.get("origin"), self.allowed_hosts, self.port, self.allowed_origins):
+            await self._deny(scope, receive, send, 403, "forbidden", "invalid Origin")
+            return
+        fetch_site = headers.get("sec-fetch-site")
+        if fetch_site is not None and fetch_site not in {"same-origin", "none"}:
+            await self._deny(scope, receive, send, 403, "forbidden", "cross-site request blocked")
+            return
+
+        if scope["type"] == "websocket":
+            token = _cookie_token(headers.get("cookie"))
+            if token is None or not secrets.compare_digest(token, self.token):
+                await self._deny_websocket(send)
+                return
+        else:
+            method = str(scope.get("method", "GET")).upper()
+            path = str(scope.get("path", ""))
+            if method not in _SAFE_METHODS and path.startswith("/api/"):
+                supplied = headers.get(CSRF_HEADER)
+                if supplied is None or not secrets.compare_digest(supplied, self.token):
+                    await self._deny(scope, receive, send, 403, "forbidden", "missing or invalid CSRF token")
+                    return
+
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _deny(
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        status: int,
+        code: str,
+        message: str,
+    ) -> None:
+        response = JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
+        await response(scope, receive, send)
+
+    @staticmethod
+    async def _deny_websocket(send: Send) -> None:
+        message: Message = {"type": "websocket.close", "code": 1008, "reason": "unauthorized"}
+        await send(message)
+
+
+def create_app(
+    client: WorkerClient | None = None,
+    settings_path: Path | None = None,
+    *,
+    allowed_hosts: tuple[str, ...] = tuple(LOCAL_HOSTS),
+    port: int | None = None,
+    allowed_origins: tuple[str, ...] = (),
+) -> FastAPI:
     worker = client or WorkerClient(settings_path)
+    csrf_token = secrets.token_urlsafe(32)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -105,17 +262,45 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
 
     app = FastAPI(title="Lucrium Panel", version="0.1.0", lifespan=lifespan)
     app.state.worker = worker
+    app.state.csrf_token = csrf_token
+    app.add_middleware(
+        LocalSecurityMiddleware,
+        token=csrf_token,
+        allowed_hosts=frozenset(item.lower() for item in allowed_hosts),
+        port=port,
+        allowed_origins=frozenset(allowed_origins),
+    )
 
     @app.exception_handler(WorkerError)
     async def _worker_error(_: Any, exc: WorkerError) -> JSONResponse:
         status = 503 if exc.code in {"unavailable", "timeout"} else 400
         return JSONResponse(status_code=status, content={"error": {"code": exc.code, "message": exc.message}})
 
+    @app.exception_handler(ValidationError)
+    async def _validation_error(_: Any, exc: ValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "invalid_params", "message": str(exc)}},
+        )
+
     # --- подключение ----------------------------------------------------------
 
     @app.get("/api/health")
     async def health() -> dict[str, bool]:
         return {"ok": True}
+
+    @app.get("/api/session")
+    async def api_session(response: Response) -> dict[str, str]:
+        """Выдаёт CSRF-токен и HttpOnly cookie для WebSocket-аутентификации."""
+        response.set_cookie(
+            SESSION_COOKIE,
+            csrf_token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return {"token": csrf_token}
 
     @app.get("/api/settings")
     async def get_settings() -> dict[str, Any]:
@@ -127,7 +312,12 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
         if not body.worker_url.strip():
             await worker.clear()
         else:
-            await worker.reconfigure(worker_url=body.worker_url, token=token, verify_tls=body.verify_tls)
+            await worker.reconfigure(
+                worker_url=body.worker_url,
+                token=token,
+                verify_tls=body.verify_tls,
+                tls_fingerprint=body.tls_fingerprint,
+            )
         return worker.settings.masked()
 
     @app.delete("/api/settings")
@@ -143,6 +333,11 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
 
     @app.post("/api/command")
     async def run_command(body: CommandBody) -> dict[str, Any]:
+        # Не превращаем локальный API в универсальный прокси к воркеру:
+        # get_state/export_state/rotate_token/import_state и т.п. имеют
+        # собственные endpoint'ы или не должны быть доступны браузеру.
+        if body.method not in {command.value for command in SAFE_COMMANDS}:
+            raise HTTPException(status_code=403, detail="command is not allowed via panel API")
         result = await worker.request(body.method, body.params)
         return {"result": result}
 
@@ -263,6 +458,7 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
                 worker_url=worker.settings.worker_url,
                 token=token,
                 verify_tls=worker.settings.verify_tls,
+                tls_fingerprint=worker.settings.tls_fingerprint,
             )
         return result
 

@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
+import os
 import ssl
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from lucrium_protocol import (
     Event,
@@ -28,7 +32,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from .settings import PanelSettings
 
-MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+MAX_MESSAGE_BYTES = 80 * 1024 * 1024
 REQUEST_TIMEOUT = 30.0
 BACKOFF_START = 1.0
 BACKOFF_MAX = 30.0
@@ -112,8 +116,20 @@ class WorkerClient:
         await self._close_ws()
         self._fail_pending("панель остановлена")
 
-    async def reconfigure(self, *, worker_url: str, token: str, verify_tls: bool = False) -> None:
-        self._settings = self._settings.with_connection(worker_url=worker_url, token=token, verify_tls=verify_tls)
+    async def reconfigure(
+        self,
+        *,
+        worker_url: str,
+        token: str,
+        verify_tls: bool = True,
+        tls_fingerprint: str = "",
+    ) -> None:
+        self._settings = self._settings.with_connection(
+            worker_url=worker_url,
+            token=token,
+            verify_tls=verify_tls,
+            tls_fingerprint=tls_fingerprint,
+        )
         self._settings.save(self.settings_path)
         self._snapshot = None
         self._worker_status = None
@@ -215,6 +231,16 @@ class WorkerClient:
 
     async def _run_connection(self) -> None:
         url = self._settings.normalized_url()
+        if not (url.startswith("ws://") or url.startswith("wss://")):
+            raise WorkerError("config", "адрес воркера должен начинаться с ws:// или wss://")
+        if url.startswith("ws://") and not _is_loopback_url(url) and os.environ.get("LUCRIUM_ALLOW_INSECURE_WS") != "1":
+            raise WorkerError(
+                "tls",
+                "незашифрованный ws:// разрешён только для localhost; используйте wss://",
+            )
+        if self._settings.tls_fingerprint and not url.startswith("wss://"):
+            raise WorkerError("tls", "fingerprint сертификата требует wss://")
+
         ssl_context = _ssl_context(self._settings) if url.startswith("wss://") else None
         async with connect(
             url,
@@ -225,6 +251,8 @@ class WorkerClient:
             ping_timeout=20,
             max_size=MAX_MESSAGE_BYTES,
         ) as websocket:
+            if self._settings.tls_fingerprint:
+                _verify_certificate_fingerprint(websocket, self._settings.tls_fingerprint)
             self._ws = websocket
             self._set_connection(ConnectionStatus.CONNECTED, "подключено")
             async for raw in websocket:
@@ -280,13 +308,41 @@ class WorkerClient:
         self._broadcast({"kind": "event", "event": name, "data": payload})
 
 
+def _normalize_fingerprint(value: str) -> str:
+    return "".join(char for char in value.strip().lower() if char in "0123456789abcdef")
+
+
 def _ssl_context(settings: PanelSettings) -> ssl.SSLContext:
     context = ssl.create_default_context()
-    if not settings.verify_tls:
-        # самоподписанный сертификат из install.sh: пользователь подключается к своему VPS
+    # Если задан fingerprint, сертификат проверяется вручную после handshake:
+    # это позволяет использовать self-signed сертификат без потери MITM-защиты.
+    if settings.tls_fingerprint or not settings.verify_tls:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
     return context
+
+
+def _verify_certificate_fingerprint(websocket: Any, expected: str) -> None:
+    transport = getattr(websocket, "transport", None)
+    ssl_object = transport.get_extra_info("ssl_object") if transport is not None else None
+    if ssl_object is None:
+        raise WorkerError("tls", "не удалось получить TLS-сертификат воркера")
+    der = ssl_object.getpeercert(binary_form=True)
+    actual = hashlib.sha256(der).hexdigest()
+    wanted = _normalize_fingerprint(expected)
+    if len(wanted) != 64 or not hmac.compare_digest(actual, wanted):
+        raise WorkerError(
+            "tls",
+            f"fingerprint сертификата не совпадает: получен {actual}",
+        )
+
+
+def _is_loopback_url(url: str) -> bool:
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 async def events_stream(client: WorkerClient) -> AsyncIterator[dict[str, Any]]:

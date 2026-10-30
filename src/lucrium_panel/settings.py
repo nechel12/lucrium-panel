@@ -26,7 +26,8 @@ def default_settings_path() -> Path:
 class PanelSettings:
     worker_url: str = ""
     token: str = ""
-    verify_tls: bool = False
+    verify_tls: bool = True
+    tls_fingerprint: str = ""
 
     @property
     def configured(self) -> bool:
@@ -41,8 +42,21 @@ class PanelSettings:
             url = f"wss://{url}"
         return url
 
-    def with_connection(self, *, worker_url: str, token: str, verify_tls: bool = False) -> PanelSettings:
-        return replace(self, worker_url=worker_url.strip(), token=token.strip(), verify_tls=verify_tls)
+    def with_connection(
+        self,
+        *,
+        worker_url: str,
+        token: str,
+        verify_tls: bool = True,
+        tls_fingerprint: str = "",
+    ) -> PanelSettings:
+        return replace(
+            self,
+            worker_url=worker_url.strip(),
+            token=token.strip(),
+            verify_tls=verify_tls,
+            tls_fingerprint=tls_fingerprint.strip(),
+        )
 
     @classmethod
     def load(cls, path: Path | None = None) -> PanelSettings:
@@ -53,18 +67,26 @@ class PanelSettings:
             data = json.loads(file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return cls()
+        if not isinstance(data, dict):
+            return cls()
+        verify_tls = data.get("verify_tls", True)
+        if not isinstance(verify_tls, bool):
+            verify_tls = str(verify_tls).strip().lower() in {"1", "true", "yes", "on"}
         return cls(
             worker_url=str(data.get("worker_url", "")),
             token=str(data.get("token", "")),
-            verify_tls=bool(data.get("verify_tls", False)),
+            verify_tls=verify_tls,
+            tls_fingerprint=str(data.get("tls_fingerprint", "")),
         )
 
     def save(self, path: Path | None = None) -> Path:
         file = path or default_settings_path()
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
+        temp = file.with_name(f".{file.name}.tmp")
+        temp.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
         with contextlib.suppress(OSError):
-            os.chmod(file, 0o600)
+            os.chmod(temp, 0o600)
+        os.replace(temp, file)
         return file
 
     def masked(self) -> dict[str, object]:
@@ -76,6 +98,7 @@ class PanelSettings:
             "configured": self.configured,
             "token_hint": f"…{tail}" if tail else "",
             "verify_tls": self.verify_tls,
+            "tls_fingerprint": self.tls_fingerprint,
         }
 
 

@@ -9,13 +9,45 @@ export class ApiError extends Error {
   }
 }
 
+let csrfToken: string | null = null;
+let sessionPromise: Promise<string> | null = null;
+
+/** Получает CSRF-токен и HttpOnly cookie для локального API/WebSocket. */
+export async function ensureSession(): Promise<string> {
+  if (csrfToken) return csrfToken;
+  if (!sessionPromise) {
+    sessionPromise = fetch("/api/session", { credentials: "same-origin" })
+      .then(async (response) => {
+        if (!response.ok) throw new ApiError(`http_${response.status}`, "не удалось открыть сессию панели");
+        const body = (await response.json()) as { token?: string };
+        if (!body.token) throw new ApiError("invalid_session", "сервер не выдал CSRF-токен");
+        csrfToken = body.token;
+        return body.token;
+      })
+      .catch((error) => {
+        sessionPromise = null;
+        throw error;
+      });
+  }
+  return sessionPromise;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
   const headers = new Headers(init?.headers);
   if (init?.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(path, { ...init, headers });
+  if (method !== "GET" && method !== "HEAD") {
+    headers.set("X-Lucrium-CSRF", await ensureSession());
+  }
+  const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
   if (!response.ok) {
+    if (response.status === 403) {
+      // Токен мог смениться после перезапуска backend — сбрасываем кэш.
+      csrfToken = null;
+      sessionPromise = null;
+    }
     const body = await response.json().catch(() => null);
     const code = body?.error?.code ?? `http_${response.status}`;
     const message = body?.error?.message ?? body?.detail ?? response.statusText;
@@ -27,10 +59,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   info: () => request<PanelInfo>("/api/state"),
   settings: () => request<SettingsInfo>("/api/settings"),
-  saveSettings: (worker_url: string, token: string, verify_tls: boolean) =>
+  saveSettings: (worker_url: string, token: string, verify_tls: boolean, tls_fingerprint = "") =>
     request<SettingsInfo>("/api/settings", {
       method: "PUT",
-      body: JSON.stringify({ worker_url, token, verify_tls }),
+      body: JSON.stringify({ worker_url, token, verify_tls, tls_fingerprint }),
     }),
   disconnect: () => request<{ ok: boolean }>("/api/settings", { method: "DELETE" }),
   command: <T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}) =>

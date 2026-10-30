@@ -36,7 +36,8 @@ export default function Settings() {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
-  const [verifyTls, setVerifyTls] = useState(false);
+  const [verifyTls, setVerifyTls] = useState(true);
+  const [fingerprint, setFingerprint] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [passphrase, setPassphrase] = useState("");
   const [importPassphrase, setImportPassphrase] = useState("");
@@ -49,6 +50,7 @@ export default function Settings() {
     if (settings.data) {
       setUrl(settings.data.worker_url);
       setVerifyTls(settings.data.verify_tls);
+      setFingerprint(settings.data.tls_fingerprint ?? "");
     }
   }, [settings.data]);
 
@@ -68,7 +70,7 @@ export default function Settings() {
 
   const saveConnection = () =>
     run(async () => {
-      await api.saveSettings(url, token, verifyTls);
+      await api.saveSettings(url, token, verifyTls, fingerprint);
       setToken("");
       setMessage("Подключение сохранено.");
     });
@@ -117,6 +119,15 @@ export default function Settings() {
             <input value={token} onChange={(event) => setToken(event.target.value)} placeholder="оставьте пустым, чтобы не менять" type="password" className={`${field} font-mono`} />
           </label>
         </div>
+        <label className="mt-3 block space-y-1.5 text-xs text-slate-400">
+          Fingerprint сертификата
+          <input
+            value={fingerprint}
+            onChange={(event) => setFingerprint(event.target.value)}
+            placeholder="SHA256 fingerprint из install.sh (для self-signed)"
+            className={`${field} font-mono text-xs`}
+          />
+        </label>
         <label className="mt-3 flex items-center gap-2 text-xs text-slate-400">
           <input type="checkbox" checked={verifyTls} onChange={(event) => setVerifyTls(event.target.checked)} className="h-4 w-4 accent-indigo-500" />
           Проверять TLS-сертификат

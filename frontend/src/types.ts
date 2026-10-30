@@ -90,6 +90,7 @@ export interface SettingsInfo {
   configured: boolean;
   token_hint: string;
   verify_tls: boolean;
+  tls_fingerprint: string;
 }
 
 export interface LiveEvent {
