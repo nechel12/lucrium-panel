@@ -16,13 +16,31 @@ import webbrowser
 from pathlib import Path
 
 import uvicorn
+from platformdirs import user_log_dir
 
 from . import __version__
 from .api import create_app
 from .settings import default_settings_path
 
 
+def _ensure_streams() -> None:
+    """Windowed exe (PyInstaller console=False) не имеет stdout/stderr — uvicorn падает.
+
+    Направляем оба потока в ``panel.log`` (плюс это удобно для диагностики).
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log_dir = Path(user_log_dir("Lucrium", "Lucrium"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stream = (log_dir / "panel.log").open("a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_streams()
     parser = argparse.ArgumentParser(prog="lucrium-panel", description="Lucrium Panel")
     parser.add_argument("--version", action="version", version=f"lucrium-panel {__version__}")
     parser.add_argument("--host", default="127.0.0.1", help="адрес локального backend (только localhost)")
@@ -53,7 +71,7 @@ def _run_browser(server: uvicorn.Server, url: str, *, open_browser: bool) -> int
 
 def _run_window(server: uvicorn.Server, url: str) -> int:
     try:
-        import webview  # type: ignore[import-not-found]
+        import webview
     except ImportError:
         print("pywebview не установлен: `uv sync --extra desktop` или запустите без --window", file=sys.stderr)
         return 2
