@@ -66,6 +66,8 @@ export default function Lots() {
   const [error, setError] = useState<string | null>(null);
 
   const account: AccountState | undefined = accounts.find((item) => item.id === accountId) ?? accounts[0];
+  const canEditPrice = account?.platform !== "funpay";
+  const canDelete = account?.platform !== "ggsel";
 
   useEffect(() => {
     if (!accountId && accounts.length) setAccountId(accounts[0].id);
@@ -220,9 +222,11 @@ export default function Lots() {
                             onChange={(event) => setEdits({ ...edits, [row.id]: event.target.value })}
                             className={`${field} w-24`}
                           />
-                          <button onClick={() => void updatePrice(row)} className="rounded-lg border border-slate-700 px-2 py-1.5 text-[11px] text-slate-300 hover:border-slate-500">
-                            Сохранить
-                          </button>
+                          {canEditPrice && (
+                            <button onClick={() => void updatePrice(row)} className="rounded-lg border border-slate-700 px-2 py-1.5 text-[11px] text-slate-300 hover:border-slate-500">
+                              Сохранить
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="px-5 py-3">
@@ -237,9 +241,11 @@ export default function Lots() {
                               Опубликовать
                             </button>
                           )}
-                          <button onClick={() => void remove(row)} className="rounded-lg p-2 text-slate-500 hover:bg-rose-500/10 hover:text-rose-300">
-                            <Trash2 size={14} />
-                          </button>
+                          {canDelete && (
+                            <button onClick={() => void remove(row)} className="rounded-lg p-2 text-slate-500 hover:bg-rose-500/10 hover:text-rose-300">
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

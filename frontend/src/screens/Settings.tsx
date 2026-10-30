@@ -40,6 +40,7 @@ export default function Settings() {
   const [fingerprint, setFingerprint] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [passphrase, setPassphrase] = useState("");
+  const [passphraseConfirm, setPassphraseConfirm] = useState("");
   const [importPassphrase, setImportPassphrase] = useState("");
   const [mode, setMode] = useState<"merge" | "replace">("merge");
   const [message, setMessage] = useState<string | null>(null);
@@ -84,6 +85,7 @@ export default function Settings() {
 
   const exportState = () =>
     run(async () => {
+      if (passphrase !== passphraseConfirm) throw new Error("Пароли экспорта не совпадают");
       const result = await api.exportState(passphrase);
       downloadBase64(result.filename, result.blob_b64);
       setMessage(`Экспортировано: ${result.filename} (${Math.round(result.size_bytes / 1024)} КБ).`);
@@ -93,6 +95,9 @@ export default function Settings() {
     run(async () => {
       const file = fileRef.current?.files?.[0];
       if (!file) throw new Error("Выберите файл .lcs");
+      if (mode === "replace" && !confirm("Режим «заменить» удалит все текущие аккаунты, плагины и историю. Продолжить?")) {
+        return;
+      }
       const blob = await fileToBase64(file);
       const result = await api.importState(blob, importPassphrase, mode);
       setMessage(`Импортировано: аккаунтов ${result.accounts}, плагинов ${result.plugins}.`);
@@ -167,7 +172,7 @@ export default function Settings() {
             <code className="flex-1 break-all font-mono text-xs text-amber-200">{newToken}</code>
             <button
               title="Скопировать"
-              onClick={() => void navigator.clipboard.writeText(newToken)}
+              onClick={() => void navigator.clipboard?.writeText(newToken).catch(() => undefined)}
               className="rounded p-1 text-amber-300 hover:bg-amber-500/10"
             >
               <Copy size={14} />
@@ -185,7 +190,12 @@ export default function Settings() {
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder="пароль (мин. 8 символов)" type="password" className={`${field} max-w-xs`} />
-          <button onClick={() => void exportState()} disabled={busy || passphrase.length < 8} className={button}>
+          <input value={passphraseConfirm} onChange={(event) => setPassphraseConfirm(event.target.value)} placeholder="повторите пароль" type="password" className={`${field} max-w-xs`} />
+          <button
+            onClick={() => void exportState()}
+            disabled={busy || passphrase.length < 8 || passphrase !== passphraseConfirm}
+            className={button}
+          >
             Скачать .lcs
           </button>
         </div>

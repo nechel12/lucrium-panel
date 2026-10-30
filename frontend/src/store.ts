@@ -45,15 +45,19 @@ export const usePanelStore = create<PanelStore>((set) => ({
     const payload = message as Record<string, unknown>;
     if (payload.kind === "snapshot") {
       const info = payload.data as PanelInfo;
-      set({
-        connection: {
-          status: info.status,
-          detail: info.detail,
-          url: info.url,
-          revision: info.revision,
-        },
-        state: info.state,
-        workerStatus: info.worker,
+      set((current) => {
+        const nextState =
+          info.state && current.state && info.state.revision < current.state.revision ? current.state : info.state;
+        return {
+          connection: {
+            status: info.status,
+            detail: info.detail,
+            url: info.url,
+            revision: nextState?.revision ?? info.revision,
+          },
+          state: nextState,
+          workerStatus: info.worker ?? current.workerStatus,
+        };
       });
       return;
     }
@@ -72,11 +76,14 @@ export const usePanelStore = create<PanelStore>((set) => ({
     const data = payload.data;
     if (name === "state" && data && typeof data === "object") {
       const snapshot = data as StateSnapshot;
-      set((current) => ({
-        state: snapshot,
-        workerStatus: snapshot.status,
-        connection: { ...current.connection, revision: snapshot.revision },
-      }));
+      set((current) => {
+        if (current.state && snapshot.revision < current.state.revision) return current;
+        return {
+          state: snapshot,
+          workerStatus: snapshot.status,
+          connection: { ...current.connection, revision: snapshot.revision },
+        };
+      });
       return;
     }
     if (name === "status" && data && typeof data === "object") {

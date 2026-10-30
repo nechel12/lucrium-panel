@@ -54,7 +54,9 @@ export default function Dashboard() {
     const data = item.data as Record<string, unknown> | null;
     return data?.session_id === sessionFilter;
   });
-  const feed = [...history, ...visibleEvents].slice(0, 100);
+  const feed = [...history, ...visibleEvents]
+    .sort((left, right) => new Date(right.at).getTime() - new Date(left.at).getTime())
+    .slice(0, 100);
 
   const loadHistory = async () => {
     setHistoryBusy(true);

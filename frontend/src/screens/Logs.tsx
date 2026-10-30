@@ -27,6 +27,7 @@ export default function Logs() {
         level: level || undefined,
         limit: 200,
       }),
+    enabled: scope !== "plugin" || Boolean(pluginId),
     refetchInterval: 3000,
   });
 
@@ -68,6 +69,9 @@ export default function Logs() {
 
       <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50">
         <div className="max-h-[65vh] overflow-auto">
+          {scope === "plugin" && !pluginId && (
+            <div className="px-5 py-8 text-center text-sm text-slate-500">Выберите плагин, чтобы увидеть его журнал.</div>
+          )}
           {logs.isLoading && <div className="px-5 py-8 text-center text-sm text-slate-500">Загрузка…</div>}
           {logs.isError && <div className="px-5 py-8 text-center text-sm text-rose-300">{(logs.error as Error).message}</div>}
           {logs.data?.entries.length === 0 && <div className="px-5 py-8 text-center text-sm text-slate-500">Записей нет.</div>}

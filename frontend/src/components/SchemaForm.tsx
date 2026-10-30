@@ -13,8 +13,32 @@ function defaultFor(prop: JsonSchema): unknown {
   if (prop.type === "boolean") return false;
   if (prop.type === "integer" || prop.type === "number") return prop.minimum ?? 0;
   if (prop.type === "array") return [];
+  if (prop.type === "object") return {};
   if (prop.enum?.length) return prop.enum[0];
   return "";
+}
+
+function isJsonField(prop: JsonSchema): boolean {
+  return prop.type === "object" || (prop.type === "array" && !prop.items?.enum);
+}
+
+function parseJsonField(key: string, prop: JsonSchema, value: unknown): unknown {
+  if (!isJsonField(prop) || typeof value !== "string") return value;
+  const text = value.trim();
+  if (!text) return prop.type === "array" ? [] : {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`Поле «${prop.title ?? key}» содержит некорректный JSON`);
+  }
+  if (prop.type === "array" && !Array.isArray(parsed)) {
+    throw new Error(`Поле «${prop.title ?? key}» должно быть массивом`);
+  }
+  if (prop.type === "object" && (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))) {
+    throw new Error(`Поле «${prop.title ?? key}» должно быть объектом`);
+  }
+  return parsed;
 }
 
 function buildInitial(schema: JsonSchema, initial: Record<string, unknown>): Record<string, unknown> {
@@ -40,7 +64,11 @@ export function SchemaForm({ schema, initial, onSubmit, submitLabel = "Сохр�
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(values);
+      const prepared: Record<string, unknown> = { ...values };
+      for (const [key, prop] of Object.entries(schema.properties ?? {})) {
+        prepared[key] = parseJsonField(key, prop, prepared[key]);
+      }
+      await onSubmit(prepared);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc));
     } finally {
@@ -124,10 +152,10 @@ export function SchemaForm({ schema, initial, onSubmit, submitLabel = "Сохр�
                 onChange={(event) => setValue(key, event.target.value === "" ? "" : Number(event.target.value))}
                 className={fieldClass}
               />
-            ) : prop.type === "object" ? (
+            ) : isJsonField(prop) ? (
               <textarea
                 rows={3}
-                value={typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2)}
+                value={typeof value === "string" ? value : JSON.stringify(value ?? (prop.type === "array" ? [] : {}), null, 2)}
                 onChange={(event) => setValue(key, event.target.value)}
                 className={`${fieldClass} font-mono text-xs`}
               />

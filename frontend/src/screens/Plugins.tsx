@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Settings2, Trash2, Upload } from "lucide-react";
 import { api } from "../api";
@@ -36,8 +36,9 @@ export default function Plugins() {
 
   const remove = async (plugin: PluginState) => {
     if (!confirm(`Удалить плагин «${plugin.name}»?`)) return;
+    const purgeData = confirm("Удалить также сохранённые данные (KV) плагина?");
     try {
-      await api.removePlugin(plugin.id, false);
+      await api.removePlugin(plugin.id, purgeData);
       await queryClient.invalidateQueries({ queryKey: ["state"] });
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
@@ -156,6 +157,10 @@ function ConfigModal({ plugin, onClose }: { plugin: PluginState; onClose: () => 
   const schema = useQuery({ queryKey: ["plugin-schema", plugin.id], queryFn: () => api.pluginSchema(plugin.id) });
   const [json, setJson] = useState(() => JSON.stringify(plugin.config, null, 2));
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (schema.data) setJson(JSON.stringify(schema.data.config, null, 2));
+  }, [schema.data]);
 
   const submit = async (values: Record<string, unknown>) => {
     await api.setPluginConfig(plugin.id, values);

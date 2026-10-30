@@ -54,7 +54,7 @@ export default function Setup() {
               type="button"
               title="Скопировать команду"
               onClick={() => {
-                void navigator.clipboard.writeText(INSTALL_COMMAND);
+                void navigator.clipboard?.writeText(INSTALL_COMMAND).catch(() => undefined);
                 setCopied(true);
                 window.setTimeout(() => setCopied(false), 1500);
               }}

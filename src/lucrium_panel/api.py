@@ -197,14 +197,14 @@ class LocalSecurityMiddleware:
 
         headers = Headers(scope=scope)
         if not _host_allowed(headers.get("host"), self.allowed_hosts, self.port):
-            await self._deny(scope, receive, send, 400, "invalid_host", "invalid Host header")
+            await self._reject(scope, receive, send, 400, "invalid_host", "invalid Host header")
             return
         if not _origin_allowed(headers.get("origin"), self.allowed_hosts, self.port, self.allowed_origins):
-            await self._deny(scope, receive, send, 403, "forbidden", "invalid Origin")
+            await self._reject(scope, receive, send, 403, "forbidden", "invalid Origin")
             return
         fetch_site = headers.get("sec-fetch-site")
         if fetch_site is not None and fetch_site not in {"same-origin", "none"}:
-            await self._deny(scope, receive, send, 403, "forbidden", "cross-site request blocked")
+            await self._reject(scope, receive, send, 403, "forbidden", "cross-site request blocked")
             return
 
         if scope["type"] == "websocket":
@@ -218,10 +218,25 @@ class LocalSecurityMiddleware:
             if method not in _SAFE_METHODS and path.startswith("/api/"):
                 supplied = headers.get(CSRF_HEADER)
                 if supplied is None or not secrets.compare_digest(supplied, self.token):
-                    await self._deny(scope, receive, send, 403, "forbidden", "missing or invalid CSRF token")
+                    await self._reject(scope, receive, send, 403, "forbidden", "missing or invalid CSRF token")
                     return
 
         await self.app(scope, receive, send)
+
+    @classmethod
+    async def _reject(
+        cls,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        status: int,
+        code: str,
+        message: str,
+    ) -> None:
+        if scope["type"] == "websocket":
+            await cls._deny_websocket(send)
+            return
+        await cls._deny(scope, receive, send, status, code, message)
 
     @staticmethod
     async def _deny(
@@ -509,12 +524,31 @@ def _check_update() -> dict[str, Any]:
         latest = str(data.get("tag_name", "")).lstrip("v")
         payload["latest"] = latest or None
         payload["url"] = data.get("html_url")
-        payload["update_available"] = bool(latest and latest != __version__)
+        payload["update_available"] = _is_newer_version(latest, __version__)
     except Exception as exc:
         payload["error"] = f"{type(exc).__name__}: {exc}"
     _update_cache["at"] = now
     _update_cache["payload"] = payload
     return dict(payload)
+
+
+def _is_newer_version(candidate: str, current: str) -> bool:
+    def parts(value: str) -> tuple[int, ...]:
+        result: list[int] = []
+        for token in value.split("."):
+            number = ""
+            for char in token:
+                if not char.isdigit():
+                    break
+                number += char
+            result.append(int(number) if number else 0)
+        return tuple(result)
+
+    if not candidate:
+        return False
+    left, right = parts(candidate), parts(current)
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) > right + (0,) * (width - len(right))
 
 
 def _params(model: BaseModel) -> dict[str, Any]:
