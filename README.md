@@ -7,7 +7,13 @@
 
 ## Быстрый старт (из исходников)
 
+Репозитории должны лежать рядом (`lucrium-panel` и `lucrium-protocol`):
+
 ```bash
+git clone https://github.com/nechel12/lucrium-protocol
+git clone https://github.com/nechel12/lucrium-panel
+cd lucrium-panel
+
 # 1. соберите фронтенд
 cd frontend && npm ci && npm run build && cd ..
 
