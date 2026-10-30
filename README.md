@@ -83,7 +83,9 @@ npm ci
 npm run dev        # Vite dev-server с прокси на 127.0.0.1:8765
 ```
 
-Запустите backend отдельно: `uv run lucrium-panel --no-browser`.
+Запустите backend отдельно: `uv run lucrium-panel --no-browser` и откройте
+напечатанный URL с `#access=...` (голый `http://127.0.0.1:8765` не получит
+доступ к API).
 
 ## Безопасность
 
