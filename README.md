@@ -89,6 +89,8 @@ npm run dev        # Vite dev-server с прокси на 127.0.0.1:8765
 
 ## Безопасность
 
+Проверка релизных тегов и exe описана в [SECURITY.md](SECURITY.md).
+
 - Backend слушает только loopback; `--host` с внешним адресом отклоняется.
 - Все mutating-запросы требуют CSRF-токен (`/api/session` + заголовок
   `X-Lucrium-CSRF`), WebSocket — HttpOnly/SameSite=Strict cookie; Host и Origin
