@@ -98,6 +98,17 @@ export interface LiveEvent {
   data: unknown;
 }
 
+export interface EventHistory {
+  events: Array<{
+    platform: string;
+    session_id: string;
+    kind: string;
+    payload: unknown;
+    ts: string;
+  }>;
+  next_cursor: number | null;
+}
+
 export interface LogEntry {
   seq: number;
   ts: string;

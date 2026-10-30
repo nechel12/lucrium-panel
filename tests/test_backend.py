@@ -199,6 +199,16 @@ async def test_api_call_client(api: Any) -> None:
     assert params == {"session_id": "acc-1", "client_method": "items.list_self", "params": {"limit": 10}}
 
 
+async def test_api_event_history(api: Any) -> None:
+    client, worker = api
+    response = await client.get("/api/events/history?session_id=acc-1&limit=5")
+    assert response.status_code == 200
+    method, params = worker.calls[-1]
+    assert method == "get_events"
+    assert params["session_id"] == "acc-1"
+    assert params["limit"] == 5
+
+
 async def test_api_settings_and_rotate(api: Any) -> None:
     client, worker = api
     response = await client.put("/api/settings", json={"worker_url": "10.0.0.1:8443", "token": "n" * 64})

@@ -4,7 +4,7 @@ import { Activity, Boxes, Play, Plus, RefreshCw, Square, Trash2, Users } from "l
 import { api } from "../api";
 import { Badge, Dot } from "../components/Badge";
 import { Modal } from "../components/Modal";
-import { usePanelStore } from "../store";
+import { usePanelStore, type EventItem } from "../store";
 import type { AccountState, Platform } from "../types";
 
 const PLATFORM_LABEL: Record<Platform, string> = {
@@ -43,9 +43,38 @@ export default function Dashboard() {
   const queryClient = useQueryClient();
   const [showAdd, setShowAdd] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [sessionFilter, setSessionFilter] = useState("");
+  const [history, setHistory] = useState<EventItem[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
 
   const status = state?.status;
   const accounts = state?.accounts ?? [];
+  const visibleEvents = events.filter((item) => {
+    if (!sessionFilter) return true;
+    const data = item.data as Record<string, unknown> | null;
+    return data?.session_id === sessionFilter;
+  });
+  const feed = [...history, ...visibleEvents].slice(0, 100);
+
+  const loadHistory = async () => {
+    setHistoryBusy(true);
+    try {
+      const result = await api.eventHistory(sessionFilter || undefined);
+      setHistory(
+        result.events.map((event, index) => ({
+          id: -index - 1,
+          kind: "event" as const,
+          event: "event",
+          data: event,
+          at: event.ts,
+        })),
+      );
+    } catch (exc) {
+      alert(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
 
   const run = async (id: string, action: () => Promise<unknown>) => {
     setBusyId(id);
@@ -132,13 +161,39 @@ export default function Dashboard() {
       </section>
 
       <section className="rounded-2xl border border-slate-800 bg-slate-900/50">
-        <div className="border-b border-slate-800 px-5 py-4">
-          <h2 className="text-sm font-semibold">Живые события</h2>
-          <p className="text-xs text-slate-500">Нормализованный поток из aiosellers и журнал плагинов</p>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-4">
+          <div>
+            <h2 className="text-sm font-semibold">Живые события</h2>
+            <p className="text-xs text-slate-500">Лента per-аккаунт из HubEvent и журнал плагинов</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={sessionFilter}
+              onChange={(event) => {
+                setSessionFilter(event.target.value);
+                setHistory([]);
+              }}
+              className="rounded-lg border border-slate-700 bg-slate-950/70 px-2 py-1.5 text-xs text-slate-200 outline-none focus:border-indigo-500"
+            >
+              <option value="">все аккаунты</option>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.label}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => void loadHistory()}
+              disabled={historyBusy}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 disabled:opacity-50"
+            >
+              {historyBusy ? "Загружаем…" : "История"}
+            </button>
+          </div>
         </div>
         <div className="max-h-72 divide-y divide-slate-800/70 overflow-auto">
-          {events.length === 0 && <div className="px-5 py-8 text-center text-sm text-slate-500">Событий пока нет.</div>}
-          {events.map((item) => (
+          {feed.length === 0 && <div className="px-5 py-8 text-center text-sm text-slate-500">Событий пока нет.</div>}
+          {feed.map((item) => (
             <div key={item.id} className="flex items-center justify-between gap-4 px-5 py-2.5 text-xs">
               <div className="flex items-center gap-3">
                 <Badge tone={item.event === "plugin_error" ? "error" : item.event === "event" ? "info" : "neutral"}>

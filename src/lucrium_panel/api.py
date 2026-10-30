@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import json
+import time
+import urllib.request
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,6 +26,7 @@ from lucrium_protocol import (
     AccountInput,
     CallClientParams,
     ExportStateParams,
+    GetEventsParams,
     GetLogsParams,
     ImportMode,
     ImportStateParams,
@@ -41,6 +46,8 @@ from pydantic import BaseModel, Field, SecretStr
 from .worker_client import WorkerClient, WorkerError
 
 MAX_UPLOAD_BYTES = 48 * 1024 * 1024
+UPDATE_CHECK_URL = "https://api.github.com/repos/nechel12/lucrium-panel/releases/latest"
+_update_cache: dict[str, Any] = {"at": 0.0, "payload": None}
 
 
 class SettingsBody(BaseModel):
@@ -150,6 +157,16 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
         params = GetLogsParams(scope=scope, plugin_id=plugin_id, level=level, limit=limit, cursor=cursor)
         return await worker.request("get_logs", _params(params))
 
+    @app.get("/api/events/history")
+    async def get_event_history(
+        session_id: str | None = None,
+        kind: str | None = None,
+        limit: int = Query(default=100, ge=1, le=1000),
+        cursor: int | None = Query(default=None, ge=0),
+    ) -> dict[str, Any]:
+        params = GetEventsParams(session_id=session_id, kind=kind, limit=limit, cursor=cursor)  # type: ignore[arg-type]
+        return await worker.request("get_events", _params(params))
+
     # --- аккаунты -------------------------------------------------------------
 
     @app.post("/api/accounts")
@@ -254,6 +271,10 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
         params = RestartParams(scope=body.scope, delay_seconds=body.delay_seconds)
         return await worker.request("restart", _params(params))
 
+    @app.get("/api/update-check")
+    async def update_check() -> dict[str, Any]:
+        return await asyncio.to_thread(_check_update)
+
     # --- live-события ---------------------------------------------------------
 
     @app.websocket("/api/events")
@@ -271,6 +292,33 @@ def create_app(client: WorkerClient | None = None, settings_path: Path | None = 
 
     _mount_frontend(app)
     return app
+
+
+def _check_update() -> dict[str, Any]:
+    """Проверка обновлений панели по GitHub Releases (спека §9), кэш 1 час."""
+    now = time.time()
+    cached = _update_cache.get("payload")
+    if cached is not None and now - float(_update_cache["at"]) < 3600:
+        return dict(cached)
+    from . import __version__
+
+    payload: dict[str, Any] = {"current": __version__, "latest": None, "url": None, "update_available": False}
+    try:
+        request = urllib.request.Request(
+            UPDATE_CHECK_URL,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "lucrium-panel"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            data = json.loads(response.read(256 * 1024))
+        latest = str(data.get("tag_name", "")).lstrip("v")
+        payload["latest"] = latest or None
+        payload["url"] = data.get("html_url")
+        payload["update_available"] = bool(latest and latest != __version__)
+    except Exception as exc:
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+    _update_cache["at"] = now
+    _update_cache["payload"] = payload
+    return dict(payload)
 
 
 def _params(model: BaseModel) -> dict[str, Any]:

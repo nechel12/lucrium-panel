@@ -229,6 +229,27 @@ export default function Settings() {
           </button>
         </div>
       </section>
+
+      <UpdateSection />
     </div>
+  );
+}
+
+function UpdateSection() {
+  const update = useQuery({ queryKey: ["update-check"], queryFn: api.updateCheck, staleTime: 3_600_000, retry: 0 });
+  return (
+    <section className={card}>
+      <h2 className="text-sm font-semibold">Версия панели</h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Текущая: <span className="font-mono text-slate-300">{update.data?.current ?? "…"}</span>
+        {update.data?.latest && <> · последняя: <span className="font-mono text-slate-300">{update.data.latest}</span></>}
+      </p>
+      {update.data?.update_available && update.data.url && (
+        <a href={update.data.url} target="_blank" rel="noreferrer" className={`${button} mt-3 inline-block`}>
+          Скачать обновление
+        </a>
+      )}
+      {update.data?.error && <p className="mt-2 text-[11px] text-slate-600">Проверка недоступна: {update.data.error}</p>}
+    </section>
   );
 }

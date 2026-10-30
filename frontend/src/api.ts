@@ -1,4 +1,4 @@
-import type { LogsResult, PanelInfo, PluginSchema, SettingsInfo } from "./types";
+import type { EventHistory, LogsResult, PanelInfo, PluginSchema, SettingsInfo } from "./types";
 
 export class ApiError extends Error {
   code: string;
@@ -45,6 +45,11 @@ export const api = {
     });
     return request<LogsResult>(`/api/logs?${params.toString()}`);
   },
+  eventHistory: (session_id?: string, limit = 100) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (session_id) params.set("session_id", session_id);
+    return request<EventHistory>(`/api/events/history?${params.toString()}`);
+  },
   addAccount: (body: unknown) =>
     request<{ account_id: string }>("/api/accounts", { method: "POST", body: JSON.stringify(body) }),
   removeAccount: (id: string) => request<{ account_id: string }>(`/api/accounts/${id}`, { method: "DELETE" }),
@@ -86,4 +91,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ scope, delay_seconds }),
     }),
+  updateCheck: () =>
+    request<{ current: string; latest: string | null; url: string | null; update_available: boolean; error?: string }>(
+      "/api/update-check",
+    ),
 };
