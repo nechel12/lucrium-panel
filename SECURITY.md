@@ -7,6 +7,11 @@ Release tags `v*` are signed with the project SSH signing key:
 - fingerprint: `SHA256:RKtM0n6ob0U7GcFKq9FVum3BifnM/pPvaZf+Vsn8OxU`
 - public key: [`security/release-signing-key.pub`](security/release-signing-key.pub)
 
+To make GitHub show tags as verified, add the same public key to the maintainer
+account as an **SSH signing key** (Settings → SSH and GPG keys → New SSH key →
+Key type: Signing Key). The CI/installer checks below work independently of the
+GitHub UI badge.
+
 Verify a tag:
 
 ```bash
