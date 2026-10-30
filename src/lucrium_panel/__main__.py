@@ -56,8 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config)
 
-    if args.window:
-        return _run_window(server, url)
+    want_window = args.window or (bool(getattr(sys, "frozen", False)) and not args.no_browser)
+    if want_window:
+        code = _run_window(server, url)
+        if code != 2:  # 2 = pywebview недоступен → откатываемся в браузер
+            return code
     return _run_browser(server, url, open_browser=not args.no_browser)
 
 
