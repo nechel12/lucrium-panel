@@ -91,6 +91,9 @@ npm run dev        # Vite dev-server с прокси на 127.0.0.1:8765
 - Все mutating-запросы требуют CSRF-токен (`/api/session` + заголовок
   `X-Lucrium-CSRF`), WebSocket — HttpOnly/SameSite=Strict cookie; Host и Origin
   проверяются, cross-site simple requests блокируются.
+- CSRF-защита рассчитана на браузер. Локальный процесс того же пользователя
+  может открыть `/api/session` и управлять панелью; на многопользовательской
+  машине запускайте панель под отдельной учётной записью ОС.
 - Pairing-токен не отдаётся фронтенду (в `/api/settings` только хвост для UI).
 - TLS проверяется по умолчанию. Для самоподписанного сертификата укажите
   SHA256 fingerprint из `install.sh` — это pinning без отключения проверки.
