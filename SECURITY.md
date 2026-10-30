@@ -27,7 +27,10 @@ git push origin v0.2.0
 ```
 
 Only maintainers should create `v*` tags; GitHub tag rulesets block updates and
-deletions of existing release tags.
+deletions of existing release tags. Release all three repositories with the same
+signed tag name in this order: `lucrium-protocol` → `lucrium-worker` →
+`lucrium-panel`; the panel release workflow checks out the protocol tag and
+verifies both signatures.
 
 ## Windows executable
 
