@@ -12,24 +12,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout protocol (sibling dependency)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: nechel12/lucrium-protocol
           path: lucrium-protocol
           persist-credentials: false
 
       - name: Checkout panel
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: lucrium-panel
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -46,7 +46,7 @@ jobs:
           uv run pyinstaller packaging/lucrium-panel.spec --noconfirm
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: lucrium-panel/dist/Lucrium.exe
           generate_release_notes: true
