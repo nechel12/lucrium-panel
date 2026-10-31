@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import secrets
 import time
 import urllib.request
@@ -58,6 +59,7 @@ STATE_TRANSFER_TIMEOUT = 300.0
 CLIENT_CALL_TIMEOUT = 90.0
 UPDATE_CHECK_URL = "https://api.github.com/repos/nechel12/lucrium-panel/releases/latest"
 _update_cache: dict[str, Any] = {"at": 0.0, "payload": None}
+logger = logging.getLogger("lucrium.panel")
 
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 SESSION_COOKIE = "lucrium_session"
@@ -536,12 +538,11 @@ def create_app(
         except Exception as exc:
             # Воркер уже отозвал старый токен. Не теряем новый токен из UI:
             # продолжаем сессию с ним и просим пользователя сохранить его.
+            # Детали исключения оставляем в локальном логе, не в HTTP-ответе.
+            logger.warning("new pairing token could not be persisted", exc_info=exc)
             await worker.adopt_token(token)
             persisted = False
-            warning = (
-                "Новый токен не сохранён на диск: "
-                f"{type(exc).__name__}: {exc}. Сохраните его вручную."
-            )
+            warning = "Новый токен не сохранён на диск. Сохраните его вручную."
         response = dict(result)
         response["persisted"] = persisted
         if warning:

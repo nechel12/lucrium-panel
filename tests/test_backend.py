@@ -403,6 +403,8 @@ async def test_api_rotate_returns_token_when_settings_save_fails(api: Any) -> No
     assert body["token"]
     assert body["persisted"] is False
     assert "warning" in body
+    assert "read-only" not in body["warning"]
+    assert "OSError" not in body["warning"]
     assert worker.adopted[-1] == body["token"]
 
 

@@ -350,6 +350,7 @@ def _normalize_fingerprint(value: str) -> str:
 
 def _ssl_context(settings: PanelSettings) -> ssl.SSLContext:
     context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     if not settings.verify_tls:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
@@ -368,6 +369,7 @@ def _fetch_peer_certificate(url: str, timeout: float = CERTIFICATE_PREFLIGHT_TIM
     try:
         raw = socket.create_connection((host, port), timeout=timeout)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         wrapped = context.wrap_socket(raw, server_hostname=host)
@@ -406,6 +408,7 @@ def _pinned_ssl_context(pem: str) -> ssl.SSLContext:
     отправится даже при подмене между preflight и основным подключением.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl.CERT_REQUIRED
     context.load_verify_locations(cadata=pem)
