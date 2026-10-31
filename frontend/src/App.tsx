@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, ensureSession } from "./api";
 import { usePanelStore } from "./store";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Layout } from "./components/Layout";
 import Setup from "./screens/Setup";
 import Dashboard from "./screens/Dashboard";
@@ -76,15 +77,24 @@ export default function App() {
       </div>
     );
   }
-  if (!settings.data?.configured) return <Setup />;
+  if (!settings.data?.configured)
+    return (
+      <ErrorBoundary label="Экран подключения">
+        <Setup />
+      </ErrorBoundary>
+    );
 
+  // key={tab} — граница сбрасывается при смене вкладки: упавший экран
+  // не должен утаскивать за собой остальную оболочку панели.
   return (
     <Layout>
-      {tab === "dashboard" && <Dashboard />}
-      {tab === "lots" && <Lots />}
-      {tab === "plugins" && <Plugins />}
-      {tab === "logs" && <Logs />}
-      {tab === "settings" && <Settings />}
+      <ErrorBoundary key={tab}>
+        {tab === "dashboard" && <Dashboard />}
+        {tab === "lots" && <Lots />}
+        {tab === "plugins" && <Plugins />}
+        {tab === "logs" && <Logs />}
+        {tab === "settings" && <Settings />}
+      </ErrorBoundary>
     </Layout>
   );
 }

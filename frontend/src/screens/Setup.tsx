@@ -16,8 +16,16 @@ export default function Setup() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Backend не сохранит verify_tls=false без fingerprint (400) — не даём и здесь
+  // отправить заведомо небезопасную конфигурацию, как на экране «Настройки».
+  const needsFingerprint = !verifyTls && fingerprint.trim() === "";
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (needsFingerprint) {
+      setError("Без проверки TLS-сертификата нужен fingerprint: иначе pairing-токен уйдёт MITM.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -94,7 +102,9 @@ export default function Setup() {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-300">Fingerprint сертификата (необязательно)</label>
+            <label className="text-xs font-medium text-slate-300">
+              Fingerprint сертификата{needsFingerprint ? <span className="text-amber-300"> (обязательно)</span> : " (необязательно)"}
+            </label>
             <input
               value={fingerprint}
               onChange={(event) => setFingerprint(event.target.value)}
@@ -114,12 +124,18 @@ export default function Setup() {
             />
             Проверять TLS-сертификат (CA). Для self-signed используйте fingerprint выше.
           </label>
+          {!verifyTls && (
+            <p className="text-[11px] text-amber-300">
+              Без проверки сертификата pairing-токен и креды площадок перехватываются MITM в той же
+              сети, поэтому при отключённой проверке обязателен fingerprint выше.
+            </p>
+          )}
           {error && (
             <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</p>
           )}
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || needsFingerprint}
             className="w-full rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-400 disabled:opacity-50"
           >
             {busy ? "Подключаемся…" : "Подключиться"}
