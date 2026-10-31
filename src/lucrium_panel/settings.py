@@ -80,6 +80,11 @@ class PanelSettings:
         )
 
     def save(self, path: Path | None = None) -> Path:
+        if not self.verify_tls and not self.tls_fingerprint.strip():
+            # CA-проверка без пиннинга ничего не стоит: MITM перехватит bearer и
+            # креда аккаунтов. Отключить verify_tls можно только заменив проверку
+            # на fingerprint.
+            raise ValueError("отключение проверки TLS требует fingerprint сертификата")
         file = path or default_settings_path()
         file.parent.mkdir(parents=True, exist_ok=True)
         temp = file.with_name(f".{file.name}.tmp")

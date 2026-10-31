@@ -97,6 +97,34 @@ def test_settings_string_boolean_is_parsed_strictly(tmp_path: Path) -> None:
     assert PanelSettings.load(path).verify_tls is False
 
 
+def test_settings_insecure_tls_is_not_persisted(tmp_path: Path) -> None:
+    """verify_tls=false имеет смысл только с fingerprint: иначе bearer уйдёт MITM."""
+    path = tmp_path / "panel.json"
+    for blank in ("", "   "):
+        with pytest.raises(ValueError, match="fingerprint"):
+            PanelSettings(
+                worker_url="wss://1.2.3.4:8443", token="t" * 64, verify_tls=False, tls_fingerprint=blank
+            ).save(path)
+    assert not path.exists()
+
+    PanelSettings(worker_url="wss://1.2.3.4:8443", token="t" * 64, verify_tls=False, tls_fingerprint="ab" * 32).save(
+        path
+    )
+    assert PanelSettings.load(path).tls_fingerprint == "ab" * 32
+
+
+def test_ssl_context_requires_fingerprint_when_verification_is_off() -> None:
+    """Legacy panel.json с отключённой проверкой не должен подключаться вслепую."""
+    from lucrium_panel.worker_client import WorkerError, _ssl_context
+
+    insecure = PanelSettings(worker_url="wss://1.2.3.4:8443", token="t" * 64, verify_tls=False)
+    with pytest.raises(WorkerError, match="fingerprint"):
+        _ssl_context(insecure)
+    verified = _ssl_context(PanelSettings(worker_url="wss://1.2.3.4:8443", token="t" * 64))
+    assert verified.verify_mode is ssl.CERT_REQUIRED
+    assert verified.check_hostname is True
+
+
 async def test_worker_client_connects_and_requests(tmp_path: Path) -> None:
     async def handler(websocket: Any) -> None:
         await websocket.send(build_event(ServerEvent.STATE, _snapshot()).model_dump_json())
@@ -205,6 +233,37 @@ async def test_fingerprint_is_verified_before_authorization_is_sent(tmp_path: Pa
         await client.start()
         await _wait_until(lambda: seen.get("authorization") is not None, timeout=10)
         assert seen["authorization"] == "Bearer super-secret-pairing-token"
+    finally:
+        await client.stop()
+        server.close()
+        await server.wait_closed()
+
+
+async def test_insecure_legacy_settings_never_send_the_token(tmp_path: Path) -> None:
+    """Legacy panel.json (verify_tls=false, fingerprint пуст) не отправляет bearer."""
+    cert_path, key_path, _ = _self_signed_cert(tmp_path)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    seen: dict[str, str | None] = {}
+
+    async def handler(websocket: Any) -> None:
+        seen["authorization"] = websocket.request.headers.get("Authorization")
+
+    server = await serve(handler, "127.0.0.1", 0, ssl=context)
+    port = server.sockets[0].getsockname()[1]
+    path = tmp_path / "panel.json"
+    path.write_text(
+        json.dumps(
+            {"worker_url": f"wss://127.0.0.1:{port}", "token": "super-secret-pairing-token", "verify_tls": False}
+        ),
+        encoding="utf-8",
+    )
+    client = WorkerClient(settings_path=path)
+    try:
+        await client.start()
+        await _wait_until(lambda: client.info()["status"] == ConnectionStatus.ERROR.value, timeout=10)
+        assert "fingerprint" in client.info()["detail"]
+        assert seen.get("authorization") is None
     finally:
         await client.stop()
         server.close()
@@ -388,6 +447,86 @@ async def test_api_settings_and_rotate(api: Any) -> None:
     assert response.json()["token"]
     # панель сохранила новый токен и переподключилась
     assert worker.reconfigured[-1][1] == response.json()["token"]
+
+
+async def test_api_settings_rejects_insecure_tls(api: Any) -> None:
+    """Backend не принимает verify_tls=false без fingerprint — это не забота UI."""
+    client, worker = api
+    response = await client.put(
+        "/api/settings", json={"worker_url": "10.0.0.1:8443", "token": "n" * 64, "verify_tls": False}
+    )
+    assert response.status_code == 400
+    assert "fingerprint" in response.json()["detail"]
+
+    # пустой или пробельный fingerprint компенсацией не считается
+    response = await client.put(
+        "/api/settings",
+        json={"worker_url": "10.0.0.1:8443", "token": "n" * 64, "verify_tls": False, "tls_fingerprint": "   "},
+    )
+    assert response.status_code == 400
+    assert worker.reconfigured == []
+
+    response = await client.put(
+        "/api/settings",
+        json={"worker_url": "10.0.0.1:8443", "token": "n" * 64, "verify_tls": False, "tls_fingerprint": "ab" * 32},
+    )
+    assert response.status_code == 200
+    assert worker.reconfigured[-1] == ("10.0.0.1:8443", "n" * 64, False, "ab" * 32)
+
+
+async def test_api_settings_requires_token_when_host_changes(api: Any) -> None:
+    """Старый pairing-токен нельзя молча отправить на новый хост."""
+    client, worker = api
+    response = await client.put("/api/settings", json={"worker_url": "203.0.113.7:8443"})
+    assert response.status_code == 400
+    assert "токен" in response.json()["detail"]
+    assert worker.reconfigured == []
+
+    # пробельный токен — это не токен
+    response = await client.put("/api/settings", json={"worker_url": "203.0.113.7:8443", "token": "   "})
+    assert response.status_code == 400
+
+    # неразбираемый адрес считаем новым хостом
+    response = await client.put("/api/settings", json={"worker_url": "wss://"})
+    assert response.status_code == 400
+    assert worker.reconfigured == []
+
+    response = await client.put("/api/settings", json={"worker_url": "203.0.113.7:8443", "token": "n" * 64})
+    assert response.status_code == 200
+    assert worker.reconfigured[-1] == ("203.0.113.7:8443", "n" * 64, True, "")
+
+
+async def test_api_settings_keeps_token_for_same_host(api: Any) -> None:
+    """Тот же хост: порт, схема, регистр, trailing slash и TLS-опции — без токена."""
+    client, worker = api
+    for worker_url, verify_tls, fingerprint in (
+        ("wss://WORKER:8443", True, ""),
+        ("WORKER:9443", True, ""),
+        ("worker:8443/", True, ""),
+        ("WSS://worker:8443", False, "ab" * 32),
+    ):
+        response = await client.put(
+            "/api/settings",
+            json={"worker_url": worker_url, "verify_tls": verify_tls, "tls_fingerprint": fingerprint},
+        )
+        assert response.status_code == 200, worker_url
+        assert worker.reconfigured[-1][1] == "t" * 64, worker_url
+
+
+async def test_api_settings_compares_ipv6_hosts(api: Any) -> None:
+    """IPv6 в скобках: тот же адрес не требует токена, другой — требует."""
+    client, worker = api
+    response = await client.put("/api/settings", json={"worker_url": "wss://[2001:db8::1]:8443", "token": "n" * 64})
+    assert response.status_code == 200
+
+    response = await client.put(
+        "/api/settings", json={"worker_url": "[2001:db8::1]:8443", "tls_fingerprint": "ab" * 32, "verify_tls": False}
+    )
+    assert response.status_code == 200
+    assert worker.reconfigured[-1][1] == "n" * 64
+
+    response = await client.put("/api/settings", json={"worker_url": "wss://[2001:db8::2]:8443"})
+    assert response.status_code == 400
 
 
 async def test_api_rotate_returns_token_when_settings_save_fails(api: Any) -> None:

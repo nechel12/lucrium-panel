@@ -76,6 +76,10 @@ export default function Settings() {
       setMessage("Подключение сохранено.");
     });
 
+  // Backend отказывается сохранять verify_tls=false без fingerprint — не даём
+  // отправить заведомо небезопасную конфигурацию и здесь.
+  const needsFingerprint = !verifyTls && fingerprint.trim() === "";
+
   const rotate = () =>
     run(async () => {
       if (!confirm("Старый токен будет отозван. Продолжить?")) return;
@@ -126,7 +130,7 @@ export default function Settings() {
           </label>
         </div>
         <label className="mt-3 block space-y-1.5 text-xs text-slate-400">
-          Fingerprint сертификата
+          Fingerprint сертификата{needsFingerprint && <span className="text-amber-300"> (обязательно)</span>}
           <input
             value={fingerprint}
             onChange={(event) => setFingerprint(event.target.value)}
@@ -136,10 +140,16 @@ export default function Settings() {
         </label>
         <label className="mt-3 flex items-center gap-2 text-xs text-slate-400">
           <input type="checkbox" checked={verifyTls} onChange={(event) => setVerifyTls(event.target.checked)} className="h-4 w-4 accent-indigo-500" />
-          Проверять TLS-сертификат
+          Проверять TLS-сертификат (CA)
         </label>
+        {!verifyTls && (
+          <p className="mt-2 text-[11px] text-amber-300">
+            Без проверки сертификата злоумышленник в вашей сети перехватит pairing-токен и логины маркетплейсов —
+            поэтому при отключённой проверке обязателен fingerprint выше.
+          </p>
+        )}
         <div className="mt-4 flex flex-wrap gap-2">
-          <button onClick={() => void saveConnection()} disabled={busy} className={button}>
+          <button onClick={() => void saveConnection()} disabled={busy || needsFingerprint} className={button}>
             Сохранить
           </button>
           <button

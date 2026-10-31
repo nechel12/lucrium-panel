@@ -50,6 +50,7 @@ from pydantic import BaseModel, Field, SecretStr, ValidationError
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .settings import PanelSettings
 from .worker_client import WorkerClient, WorkerError
 
 MAX_UPLOAD_BYTES = 48 * 1024 * 1024
@@ -111,6 +112,18 @@ class ImportBody(BaseModel):
 class RestartBody(BaseModel):
     scope: RestartScope = RestartScope.WORKER
     delay_seconds: float = Field(default=0.0, ge=0, le=3600)
+
+
+def _worker_host(value: str) -> str | None:
+    """Хост адреса воркера: схема необязательна (``host:port``), IPv6 — в скобках.
+
+    Нужен, чтобы отличать «тот же хост, другой порт» от «совсем другой хост»:
+    во втором случае старый pairing-токен отправлять нельзя.
+    """
+    try:
+        return (urlsplit(PanelSettings(worker_url=value).normalized_url()).hostname or "").lower() or None
+    except ValueError:
+        return None
 
 
 def _host_parts(value: str | None) -> tuple[str, int | None] | None:
@@ -355,16 +368,33 @@ def create_app(
 
     @app.put("/api/settings")
     async def put_settings(body: SettingsBody) -> dict[str, Any]:
-        token = body.token.strip() or worker.settings.token
-        if not body.worker_url.strip():
+        worker_url = body.worker_url.strip()
+        if not worker_url:
             await worker.clear()
-        else:
-            await worker.reconfigure(
-                worker_url=body.worker_url,
-                token=token,
-                verify_tls=body.verify_tls,
-                tls_fingerprint=body.tls_fingerprint,
+            return worker.settings.masked()
+        if not body.verify_tls and not body.tls_fingerprint.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Отключить проверку TLS можно только с fingerprint сертификата: "
+                    "без него MITM перехватит pairing-токен и креда аккаунтов."
+                ),
             )
+        token = body.token.strip()
+        # Неизвестный хост считаем новым: старый токен отправляем лишь тогда,
+        # когда хост точно совпадает со сохранённым (регистр и порт не в счёт).
+        new_host = _worker_host(worker_url)
+        if not token and (new_host is None or new_host != _worker_host(worker.settings.worker_url)):
+            raise HTTPException(
+                status_code=400,
+                detail="Адрес воркера изменён — введите pairing-токен заново.",
+            )
+        await worker.reconfigure(
+            worker_url=worker_url,
+            token=token or worker.settings.token,
+            verify_tls=body.verify_tls,
+            tls_fingerprint=body.tls_fingerprint,
+        )
         return worker.settings.masked()
 
     @app.delete("/api/settings")

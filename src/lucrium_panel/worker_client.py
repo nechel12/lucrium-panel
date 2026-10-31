@@ -352,8 +352,14 @@ def _ssl_context(settings: PanelSettings) -> ssl.SSLContext:
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     if not settings.verify_tls:
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+        # Сюда доходим только без fingerprint (пиннинг проверяется раньше),
+        # значит CERT_NONE открыл бы MITM-перехват токена и креда аккаунтов.
+        # PanelSettings.save такую конфигурацию не сохранит, но legacy
+        # panel.json на диске не должен подключаться вслепую.
+        raise WorkerError(
+            "tls",
+            "проверка TLS отключена, а fingerprint не задан: включите проверку или укажите fingerprint",
+        )
     return context
 
 
