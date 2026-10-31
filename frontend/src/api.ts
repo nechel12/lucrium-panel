@@ -116,11 +116,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ client_method, params }),
     }).then((body) => body.data),
-  installPlugin: (file: File, autoStart: boolean, overwrite: boolean) => {
+  installPlugin: (file: File, autoStart: boolean, overwrite: boolean, ackPermissions = false) => {
     const form = new FormData();
     form.set("file", file);
     form.set("auto_start", String(autoStart));
     form.set("overwrite", String(overwrite));
+    form.set("ack_permissions", String(ackPermissions));
     return request<unknown>("/api/plugins/install", { method: "POST", body: form });
   },
   removePlugin: (id: string, purge: boolean) =>

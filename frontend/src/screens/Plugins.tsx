@@ -18,17 +18,31 @@ export default function Plugins() {
   const [autoStart, setAutoStart] = useState(true);
   const [overwrite, setOverwrite] = useState(false);
 
+  const doInstall = async (ack: boolean) => {
+    if (!file) return;
+    await api.installPlugin(file, autoStart, overwrite, ack);
+    setMessage(`Плагин «${file.name}» установлен.`);
+    setFile(null);
+    await queryClient.invalidateQueries({ queryKey: ["state"] });
+  };
+
   const install = async () => {
     if (!file) return;
     setBusy(true);
     setMessage(null);
     try {
-      await api.installPlugin(file, autoStart, overwrite);
-      setMessage(`Плагин «${file.name}» установлен.`);
-      setFile(null);
-      await queryClient.invalidateQueries({ queryKey: ["state"] });
+      await doInstall(false);
     } catch (exc) {
-      setMessage(exc instanceof Error ? exc.message : String(exc));
+      const text = exc instanceof Error ? exc.message : String(exc);
+      if (text.includes("changes permissions") && confirm(`${text}\n\nРазрешения дают плагину доступ к аккаунтам и деньгам. Установить с ними?`)) {
+        try {
+          await doInstall(true);
+        } catch (retry) {
+          setMessage(retry instanceof Error ? retry.message : String(retry));
+        }
+      } else {
+        setMessage(text);
+      }
     } finally {
       setBusy(false);
     }
@@ -96,6 +110,7 @@ export default function Plugins() {
                 <th className="px-5 py-3">Плагин</th>
                 <th className="px-5 py-3">Статус</th>
                 <th className="px-5 py-3">Версия</th>
+                <th className="px-5 py-3">Разрешения</th>
                 <th className="px-5 py-3">Рестарты</th>
                 <th className="px-5 py-3" />
               </tr>
@@ -119,6 +134,9 @@ export default function Plugins() {
                     </Badge>
                   </td>
                   <td className="px-5 py-3 text-slate-300">{plugin.version}</td>
+                  <td className="px-5 py-3">
+                    <Permissions plugin={plugin} />
+                  </td>
                   <td className="px-5 py-3 text-slate-400">{plugin.restarts}</td>
                   <td className="px-5 py-3">
                     <div className="flex justify-end gap-1">
@@ -148,6 +166,22 @@ export default function Plugins() {
       </section>
 
       {configPlugin && <ConfigModal plugin={configPlugin} onClose={() => setConfigPlugin(null)} />}
+    </div>
+  );
+}
+
+function Permissions({ plugin }: { plugin: PluginState }) {
+  const permissions = plugin.permissions;
+  if (!permissions) {
+    return <span className="text-[11px] text-slate-600">не зафиксированы</span>;
+  }
+  const accounts = permissions.accounts.length > 0 ? permissions.accounts.join(", ") : "все площадки";
+  return (
+    <div className="flex flex-wrap gap-1">
+      <Badge tone="neutral">{accounts}</Badge>
+      {permissions.network && <Badge tone="warning">network</Badge>}
+      {permissions.finance && <Badge tone="error">finance</Badge>}
+      {!permissions.network && !permissions.finance && <Badge tone="neutral">без сети и денег</Badge>}
     </div>
   );
 }

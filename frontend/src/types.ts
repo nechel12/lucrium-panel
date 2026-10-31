@@ -44,8 +44,15 @@ export interface PluginState {
   last_error?: string | null;
   has_config_schema: boolean;
   config: Record<string, unknown>;
+  permissions?: PluginPermissions | null;
   installed_at: string;
   updated_at: string;
+}
+
+export interface PluginPermissions {
+  accounts: string[];
+  network: boolean;
+  finance: boolean;
 }
 
 export interface StatusCounts {

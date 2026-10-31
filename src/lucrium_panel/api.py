@@ -454,6 +454,7 @@ def create_app(
         file: Annotated[UploadFile, File()],
         auto_start: Annotated[bool, Form()] = True,
         overwrite: Annotated[bool, Form()] = False,
+        ack_permissions: Annotated[bool, Form()] = False,
     ) -> dict[str, Any]:
         archive = await file.read(MAX_UPLOAD_BYTES + 1)
         if len(archive) > MAX_UPLOAD_BYTES:
@@ -463,6 +464,7 @@ def create_app(
             sha256=hashlib.sha256(archive).hexdigest(),
             auto_start=auto_start,
             overwrite=overwrite,
+            ack_permissions=ack_permissions,
         )
         return await worker.request("install_plugin", _params(params), timeout=PLUGIN_OPERATION_TIMEOUT)
 
