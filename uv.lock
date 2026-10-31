@@ -567,7 +567,7 @@ wheels = [
 
 [[package]]
 name = "lucrium-panel"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -619,7 +619,7 @@ dev = [
 
 [[package]]
 name = "lucrium-protocol"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "../lucrium-protocol/packages/lucrium-protocol" }
 dependencies = [
     { name = "pydantic" },

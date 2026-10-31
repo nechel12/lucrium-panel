@@ -1,6 +1,6 @@
 [project]
 name = "lucrium-panel"
-version = "0.1.0"
+version = "0.1.2"
 description = "Lucrium Panel — десктоп-панель управления воркером (FastAPI + React)"
 readme = "README.md"
 requires-python = ">=3.12"
