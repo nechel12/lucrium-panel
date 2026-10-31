@@ -33,6 +33,11 @@ interface PanelStore {
 
 let eventSeq = 0;
 
+function sameWorker(current: StateSnapshot | null, incoming: StateSnapshot | null): boolean {
+  if (!current || !incoming) return true;
+  return current.status.started_at === incoming.status.started_at;
+}
+
 export const usePanelStore = create<PanelStore>((set) => ({
   tab: "dashboard",
   connection: { status: "disconnected", detail: "подключение…", url: "", revision: null },
@@ -46,8 +51,10 @@ export const usePanelStore = create<PanelStore>((set) => ({
     if (payload.kind === "snapshot") {
       const info = payload.data as PanelInfo;
       set((current) => {
-        const nextState =
-          info.state && current.state && info.state.revision < current.state.revision ? current.state : info.state;
+        const incoming = info.state;
+        const isNewWorker = Boolean(incoming && current.state && !sameWorker(current.state, incoming));
+        const accept = !incoming || !current.state || isNewWorker || incoming.revision >= current.state.revision;
+        const nextState = accept ? incoming : current.state;
         return {
           connection: {
             status: info.status,
@@ -56,7 +63,8 @@ export const usePanelStore = create<PanelStore>((set) => ({
             revision: nextState?.revision ?? info.revision,
           },
           state: nextState,
-          workerStatus: info.worker ?? current.workerStatus,
+          workerStatus: nextState?.status ?? info.worker ?? current.workerStatus,
+          events: isNewWorker ? [] : current.events,
         };
       });
       return;
@@ -77,17 +85,29 @@ export const usePanelStore = create<PanelStore>((set) => ({
     if (name === "state" && data && typeof data === "object") {
       const snapshot = data as StateSnapshot;
       set((current) => {
-        if (current.state && snapshot.revision < current.state.revision) return current;
+        const isNewWorker = Boolean(current.state && !sameWorker(current.state, snapshot));
+        if (current.state && !isNewWorker && snapshot.revision < current.state.revision) return current;
         return {
           state: snapshot,
           workerStatus: snapshot.status,
           connection: { ...current.connection, revision: snapshot.revision },
+          events: isNewWorker ? [] : current.events,
         };
       });
       return;
     }
     if (name === "status" && data && typeof data === "object") {
-      set({ workerStatus: data as WorkerStatus });
+      const status = data as WorkerStatus;
+      set((current) => {
+        const isNewWorker = Boolean(current.workerStatus && current.workerStatus.started_at !== status.started_at);
+        return {
+          workerStatus: status,
+          // Heartbeat нового процесса может прийти раньше state: старый
+          // снапшот уже невалиден, не показываем его как актуальный.
+          state: isNewWorker ? null : current.state,
+          events: isNewWorker ? [] : current.events,
+        };
+      });
       return;
     }
     const item: EventItem = {

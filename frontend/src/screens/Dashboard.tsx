@@ -38,6 +38,7 @@ function eventSummary(item: { event: string; data: unknown }): string {
 
 export default function Dashboard() {
   const state = usePanelStore((store) => store.state);
+  const liveStatus = usePanelStore((store) => store.workerStatus);
   const connection = usePanelStore((store) => store.connection);
   const events = usePanelStore((store) => store.events);
   const queryClient = useQueryClient();
@@ -47,7 +48,7 @@ export default function Dashboard() {
   const [history, setHistory] = useState<EventItem[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
 
-  const status = state?.status;
+  const status = liveStatus ?? state?.status;
   const accounts = state?.accounts ?? [];
   const visibleEvents = events.filter((item) => {
     if (!sessionFilter) return true;
