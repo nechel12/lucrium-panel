@@ -81,6 +81,7 @@ export default function Settings() {
       if (!confirm("Старый токен будет отозван. Продолжить?")) return;
       const result = await api.rotateToken();
       setNewToken(result.token);
+      if (result.warning) setMessage(result.warning);
     });
 
   const exportState = () =>

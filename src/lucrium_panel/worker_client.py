@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import hmac
 import os
+import socket
 import ssl
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ MAX_MESSAGE_BYTES = 80 * 1024 * 1024
 REQUEST_TIMEOUT = 30.0
 BACKOFF_START = 1.0
 BACKOFF_MAX = 30.0
+CERTIFICATE_PREFLIGHT_TIMEOUT = 10.0
 
 
 class ConnectionStatus(StrEnum):
@@ -124,13 +126,33 @@ class WorkerClient:
         verify_tls: bool = True,
         tls_fingerprint: str = "",
     ) -> None:
-        self._settings = self._settings.with_connection(
+        new_settings = self._settings.with_connection(
             worker_url=worker_url,
             token=token,
             verify_tls=verify_tls,
             tls_fingerprint=tls_fingerprint,
         )
-        self._settings.save(self.settings_path)
+        # Сначала сохраняем: при ошибке записи текущее соединение и токен
+        # остаются валидными.
+        new_settings.save(self.settings_path)
+        self._settings = new_settings
+        self._snapshot = None
+        self._worker_status = None
+        await self._close_ws()
+        self._wake.set()
+
+    async def adopt_token(self, token: str) -> None:
+        """Принять уже ротированный воркером токен без записи на диск.
+
+        Используется как аварийный путь, если сохранение настроек не удалось:
+        сессия панели продолжит работать, а токен нужно сохранить вручную.
+        """
+        self._settings = self._settings.with_connection(
+            worker_url=self._settings.worker_url,
+            token=token,
+            verify_tls=self._settings.verify_tls,
+            tls_fingerprint=self._settings.tls_fingerprint,
+        )
         self._snapshot = None
         self._worker_status = None
         await self._close_ws()
@@ -138,8 +160,9 @@ class WorkerClient:
 
     async def clear(self) -> None:
         """Забыть адрес и токен (переход на экран первоначальной настройки)."""
-        self._settings = PanelSettings()
-        self._settings.save(self.settings_path)
+        new_settings = PanelSettings()
+        new_settings.save(self.settings_path)
+        self._settings = new_settings
         self._snapshot = None
         self._worker_status = None
         await self._close_ws()
@@ -241,7 +264,17 @@ class WorkerClient:
         if self._settings.tls_fingerprint and not url.startswith("wss://"):
             raise WorkerError("tls", "fingerprint сертификата требует wss://")
 
-        ssl_context = _ssl_context(self._settings) if url.startswith("wss://") else None
+        ssl_context = None
+        if url.startswith("wss://"):
+            if self._settings.tls_fingerprint:
+                # Проверяем сертификат ДО отправки HTTP-upgrade: иначе bearer
+                # уже улетит потенциальному MITM, а пиннинг проверит лишь факт
+                # несовпадения. Preflight не содержит Authorization.
+                pem = await asyncio.to_thread(_fetch_peer_certificate, url)
+                _verify_fingerprint(pem, self._settings.tls_fingerprint)
+                ssl_context = _pinned_ssl_context(pem)
+            else:
+                ssl_context = _ssl_context(self._settings)
         async with connect(
             url,
             ssl=ssl_context,
@@ -251,8 +284,6 @@ class WorkerClient:
             ping_timeout=20,
             max_size=MAX_MESSAGE_BYTES,
         ) as websocket:
-            if self._settings.tls_fingerprint:
-                _verify_certificate_fingerprint(websocket, self._settings.tls_fingerprint)
             self._ws = websocket
             self._set_connection(ConnectionStatus.CONNECTED, "подключено")
             async for raw in websocket:
@@ -319,20 +350,46 @@ def _normalize_fingerprint(value: str) -> str:
 
 def _ssl_context(settings: PanelSettings) -> ssl.SSLContext:
     context = ssl.create_default_context()
-    # Если задан fingerprint, сертификат проверяется вручную после handshake:
-    # это позволяет использовать self-signed сертификат без потери MITM-защиты.
-    if settings.tls_fingerprint or not settings.verify_tls:
+    if not settings.verify_tls:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
     return context
 
 
-def _verify_certificate_fingerprint(websocket: Any, expected: str) -> None:
-    transport = getattr(websocket, "transport", None)
-    ssl_object = transport.get_extra_info("ssl_object") if transport is not None else None
-    if ssl_object is None:
-        raise WorkerError("tls", "не удалось получить TLS-сертификат воркера")
-    der = ssl_object.getpeercert(binary_form=True)
+def _fetch_peer_certificate(url: str, timeout: float = CERTIFICATE_PREFLIGHT_TIMEOUT) -> str:
+    """Возвращает PEM сертификата воркера, не отправляя HTTP/токен."""
+    parts = urlsplit(url)
+    host = parts.hostname
+    if not host:
+        raise WorkerError("tls", "worker URL has no hostname")
+    port = parts.port or 443
+    raw: socket.socket | None = None
+    wrapped: ssl.SSLSocket | None = None
+    try:
+        raw = socket.create_connection((host, port), timeout=timeout)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        wrapped = context.wrap_socket(raw, server_hostname=host)
+        der = wrapped.getpeercert(binary_form=True)
+        if not der:
+            raise WorkerError("tls", "worker did not present a TLS certificate")
+        return ssl.DER_cert_to_PEM_cert(der)
+    except WorkerError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise WorkerError("tls", f"cannot read worker certificate: {exc}") from exc
+    finally:
+        if wrapped is not None:
+            with contextlib.suppress(OSError):
+                wrapped.close()
+        elif raw is not None:
+            with contextlib.suppress(OSError):
+                raw.close()
+
+
+def _verify_fingerprint(pem: str, expected: str) -> None:
+    der = ssl.PEM_cert_to_DER_cert(pem)
     actual = hashlib.sha256(der).hexdigest()
     wanted = _normalize_fingerprint(expected)
     if len(wanted) != 64 or not hmac.compare_digest(actual, wanted):
@@ -340,6 +397,19 @@ def _verify_certificate_fingerprint(websocket: Any, expected: str) -> None:
             "tls",
             f"fingerprint сертификата не совпадает: получен {actual}",
         )
+
+
+def _pinned_ssl_context(pem: str) -> ssl.SSLContext:
+    """Контекст, который доверяет только сертификату с проверенным fingerprint.
+
+    Повторный handshake с другим сертификатом не пройдёт, поэтому токен не
+    отправится даже при подмене между preflight и основным подключением.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_verify_locations(cadata=pem)
+    return context
 
 
 def _is_loopback_url(url: str) -> bool:

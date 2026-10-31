@@ -141,7 +141,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ blob_b64, passphrase, mode }),
     }),
-  rotateToken: () => request<{ token: string; rotated_at: string }>("/api/token/rotate", { method: "POST" }),
+  rotateToken: () =>
+    request<{ token: string; rotated_at: string; persisted?: boolean; warning?: string }>("/api/token/rotate", {
+      method: "POST",
+    }),
   restart: (scope: "worker" | "sessions", delay_seconds = 0) =>
     request<{ scheduled: boolean; delay_seconds: number }>("/api/restart", {
       method: "POST",

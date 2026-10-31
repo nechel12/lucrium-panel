@@ -52,6 +52,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from .worker_client import WorkerClient, WorkerError
 
 MAX_UPLOAD_BYTES = 48 * 1024 * 1024
+ACCOUNT_OPERATION_TIMEOUT = 60.0
+PLUGIN_OPERATION_TIMEOUT = 180.0
+STATE_TRANSFER_TIMEOUT = 300.0
+CLIENT_CALL_TIMEOUT = 90.0
 UPDATE_CHECK_URL = "https://api.github.com/repos/nechel12/lucrium-panel/releases/latest"
 _update_cache: dict[str, Any] = {"at": 0.0, "payload": None}
 
@@ -407,7 +411,9 @@ def create_app(
 
     @app.post("/api/accounts")
     async def add_account(body: AccountInput) -> dict[str, Any]:
-        return await worker.request("add_account", {"account": to_wire(body)})
+        return await worker.request(
+            "add_account", {"account": to_wire(body)}, timeout=ACCOUNT_OPERATION_TIMEOUT
+        )
 
     @app.patch("/api/accounts/{account_id}")
     async def update_account(account_id: str, body: AccountPatch) -> dict[str, Any]:
@@ -418,19 +424,27 @@ def create_app(
             proxy=None if body.proxy is None else ProxyConfig.model_validate(body.proxy),
             clear_proxy=body.clear_proxy,
         )
-        return await worker.request("update_account", _params(params))
+        return await worker.request(
+            "update_account", _params(params), timeout=ACCOUNT_OPERATION_TIMEOUT
+        )
 
     @app.delete("/api/accounts/{account_id}")
     async def remove_account(account_id: str) -> dict[str, Any]:
-        return await worker.request("remove_account", {"account_id": account_id})
+        return await worker.request(
+            "remove_account", {"account_id": account_id}, timeout=ACCOUNT_OPERATION_TIMEOUT
+        )
 
     @app.post("/api/accounts/{account_id}/start")
     async def start_session(account_id: str) -> dict[str, Any]:
-        return await worker.request("start_session", {"account_id": account_id})
+        return await worker.request(
+            "start_session", {"account_id": account_id}, timeout=ACCOUNT_OPERATION_TIMEOUT
+        )
 
     @app.post("/api/accounts/{account_id}/stop")
     async def stop_session(account_id: str) -> dict[str, Any]:
-        return await worker.request("stop_session", {"account_id": account_id})
+        return await worker.request(
+            "stop_session", {"account_id": account_id}, timeout=ACCOUNT_OPERATION_TIMEOUT
+        )
 
     @app.post("/api/accounts/{account_id}/call")
     async def call_client(account_id: str, body: CallBody) -> dict[str, Any]:
@@ -439,7 +453,9 @@ def create_app(
             client_method=body.client_method,
             params=body.params,
         )
-        return await worker.request("call_client", _params(params))
+        return await worker.request(
+            "call_client", _params(params), timeout=CLIENT_CALL_TIMEOUT
+        )
 
     # --- плагины --------------------------------------------------------------
 
@@ -458,28 +474,38 @@ def create_app(
             auto_start=auto_start,
             overwrite=overwrite,
         )
-        return await worker.request("install_plugin", _params(params))
+        return await worker.request(
+            "install_plugin", _params(params), timeout=PLUGIN_OPERATION_TIMEOUT
+        )
 
     @app.post("/api/plugins/{plugin_id}/config")
     async def set_plugin_config(plugin_id: str, body: ConfigBody) -> dict[str, Any]:
         params = SetPluginConfigParams(plugin_id=plugin_id, config=body.config)
-        return await worker.request("set_plugin_config", _params(params))
+        return await worker.request(
+            "set_plugin_config", _params(params), timeout=PLUGIN_OPERATION_TIMEOUT
+        )
 
     @app.get("/api/plugins/{plugin_id}/schema")
     async def get_plugin_schema(plugin_id: str) -> dict[str, Any]:
-        return await worker.request("get_plugin_schema", {"plugin_id": plugin_id})
+        return await worker.request(
+            "get_plugin_schema", {"plugin_id": plugin_id}, timeout=ACCOUNT_OPERATION_TIMEOUT
+        )
 
     @app.delete("/api/plugins/{plugin_id}")
     async def remove_plugin(plugin_id: str, purge_data: bool = False) -> dict[str, Any]:
         params = RemovePluginParams(plugin_id=plugin_id, purge_data=purge_data)
-        return await worker.request("remove_plugin", _params(params))
+        return await worker.request(
+            "remove_plugin", _params(params), timeout=PLUGIN_OPERATION_TIMEOUT
+        )
 
     # --- состояние целиком ----------------------------------------------------
 
     @app.post("/api/export")
     async def export_state(body: ExportBody) -> dict[str, Any]:
         params = ExportStateParams(passphrase=SecretStr(body.passphrase))
-        return await worker.request("export_state", _params(params))
+        return await worker.request(
+            "export_state", _params(params), timeout=STATE_TRANSFER_TIMEOUT
+        )
 
     @app.post("/api/import")
     async def import_state(body: ImportBody) -> dict[str, Any]:
@@ -488,25 +514,46 @@ def create_app(
             passphrase=SecretStr(body.passphrase),
             mode=body.mode,
         )
-        return await worker.request("import_state", _params(params))
+        return await worker.request(
+            "import_state", _params(params), timeout=STATE_TRANSFER_TIMEOUT
+        )
 
     @app.post("/api/token/rotate")
     async def rotate_token() -> dict[str, Any]:
-        result = await worker.request("rotate_token", {})
+        result = await worker.request("rotate_token", {}, timeout=ACCOUNT_OPERATION_TIMEOUT)
         token = str(result.get("token", ""))
-        if token:
+        if not token:
+            return result
+        persisted = True
+        warning: str | None = None
+        try:
             await worker.reconfigure(
                 worker_url=worker.settings.worker_url,
                 token=token,
                 verify_tls=worker.settings.verify_tls,
                 tls_fingerprint=worker.settings.tls_fingerprint,
             )
-        return result
+        except Exception as exc:
+            # Воркер уже отозвал старый токен. Не теряем новый токен из UI:
+            # продолжаем сессию с ним и просим пользователя сохранить его.
+            await worker.adopt_token(token)
+            persisted = False
+            warning = (
+                "Новый токен не сохранён на диск: "
+                f"{type(exc).__name__}: {exc}. Сохраните его вручную."
+            )
+        response = dict(result)
+        response["persisted"] = persisted
+        if warning:
+            response["warning"] = warning
+        return response
 
     @app.post("/api/restart")
     async def restart(body: RestartBody) -> dict[str, Any]:
         params = RestartParams(scope=body.scope, delay_seconds=body.delay_seconds)
-        return await worker.request("restart", _params(params))
+        return await worker.request(
+            "restart", _params(params), timeout=ACCOUNT_OPERATION_TIMEOUT
+        )
 
     @app.get("/api/update-check")
     async def update_check() -> dict[str, Any]:

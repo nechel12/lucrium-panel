@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
 import json
-from datetime import UTC, datetime
+import ssl
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 from httpx import ASGITransport, AsyncClient
 from lucrium_protocol import (
     PingParams,
@@ -132,6 +139,78 @@ async def test_worker_client_not_configured(tmp_path: Path) -> None:
         await client.stop()
 
 
+def _self_signed_cert(tmp_path: Path) -> tuple[Path, Path, str]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(days=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+    return cert_path, key_path, hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+
+async def test_fingerprint_is_verified_before_authorization_is_sent(tmp_path: Path) -> None:
+    cert_path, key_path, fingerprint = _self_signed_cert(tmp_path)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    seen: dict[str, str | None] = {}
+
+    async def handler(websocket: Any) -> None:
+        seen["authorization"] = websocket.request.headers.get("Authorization")
+
+    server = await serve(handler, "127.0.0.1", 0, ssl=context)
+    port = server.sockets[0].getsockname()[1]
+    client = WorkerClient(settings_path=tmp_path / "panel.json")
+    try:
+        await client.reconfigure(
+            worker_url=f"wss://127.0.0.1:{port}",
+            token="super-secret-pairing-token",
+            verify_tls=True,
+            tls_fingerprint="00" * 32,
+        )
+        await client.start()
+        await _wait_until(lambda: client.info()["status"] == ConnectionStatus.ERROR.value, timeout=10)
+        assert seen.get("authorization") is None
+    finally:
+        await client.stop()
+
+    client = WorkerClient(settings_path=tmp_path / "panel.json")
+    try:
+        await client.reconfigure(
+            worker_url=f"wss://127.0.0.1:{port}",
+            token="super-secret-pairing-token",
+            verify_tls=True,
+            tls_fingerprint=fingerprint,
+        )
+        await client.start()
+        await _wait_until(lambda: seen.get("authorization") is not None, timeout=10)
+        assert seen["authorization"] == "Bearer super-secret-pairing-token"
+    finally:
+        await client.stop()
+        server.close()
+        await server.wait_closed()
+
+
 class FakeWorker:
     """Дух WorkerClient для API-тестов: записывает вызовы."""
 
@@ -139,6 +218,7 @@ class FakeWorker:
         self.settings = PanelSettings().with_connection(worker_url="wss://worker:8443", token="t" * 64)
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.reconfigured: list[tuple[str, str, bool, str]] = []
+        self.adopted: list[str] = []
         self.cleared = False
 
     def info(self) -> dict[str, Any]:
@@ -180,6 +260,15 @@ class FakeWorker:
 
     async def clear(self) -> None:
         self.cleared = True
+
+    async def adopt_token(self, token: str) -> None:
+        self.adopted.append(token)
+        self.settings = self.settings.with_connection(
+            worker_url=self.settings.worker_url,
+            token=token,
+            verify_tls=self.settings.verify_tls,
+            tls_fingerprint=self.settings.tls_fingerprint,
+        )
 
 
 @pytest.fixture
@@ -299,6 +388,48 @@ async def test_api_settings_and_rotate(api: Any) -> None:
     assert response.json()["token"]
     # панель сохранила новый токен и переподключилась
     assert worker.reconfigured[-1][1] == response.json()["token"]
+
+
+async def test_api_rotate_returns_token_when_settings_save_fails(api: Any) -> None:
+    client, worker = api
+
+    async def failing_reconfigure(**_: Any) -> None:
+        raise OSError("read-only settings")
+
+    worker.reconfigure = failing_reconfigure  # type: ignore[method-assign]
+    response = await client.post("/api/token/rotate")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token"]
+    assert body["persisted"] is False
+    assert "warning" in body
+    assert worker.adopted[-1] == body["token"]
+
+
+async def test_worker_client_reconfigure_keeps_settings_when_save_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = WorkerClient(settings_path=tmp_path / "panel.json")
+    await client.reconfigure(
+        worker_url="wss://old:8443",
+        token="o" * 64,
+        verify_tls=True,
+        tls_fingerprint="",
+    )
+
+    def fail_save(self: PanelSettings, path: Path | None = None) -> Path:
+        raise OSError("read-only settings")
+
+    monkeypatch.setattr(PanelSettings, "save", fail_save)
+    with pytest.raises(OSError):
+        await client.reconfigure(
+            worker_url="wss://new:8443",
+            token="n" * 64,
+            verify_tls=True,
+            tls_fingerprint="",
+        )
+    assert client.settings.token == "o" * 64
+    assert client.settings.worker_url == "wss://old:8443"
 
 
 async def test_api_worker_error_maps_to_http(api: Any) -> None:

@@ -84,7 +84,14 @@ def main(argv: list[str] | None = None) -> int:
 def _run_browser(server: uvicorn.Server, url: str, *, open_browser: bool) -> int:
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    print(f"Lucrium Panel: {url}")
+    safe_url = url.split("#", 1)[0]
+    if getattr(sys, "frozen", False):
+        # В windowed-режиме stdout может уходить в panel.log: не храним
+        # access-токен в файле.
+        print(f"Lucrium Panel: {safe_url}")
+    else:
+        # В консольном/dev-режиме URL с access-токеном нужен для ручного входа.
+        print(f"Lucrium Panel: {url}")
     server.run()
     return 0
 
